@@ -659,12 +659,15 @@ export function createRoom({
     // families, budgeted and attributed separately so `spend` can answer "what
     // did the judging cost" without unpicking the probes.
     const judgePanelProvider = judges
-      ? budgeted(judgeProvider || prov(), { who: (req) => `judge:${req?.model || '?'}`, why: 'audition-judge' })
+      ? budgeted(judgeProvider || prov(), { who: 'audition:judges', why: 'audition-judge' })
       : null;
 
+    // `who` matches the label the ledger uses, so the attribution log and
+    // spend.json describe the same rows; which model was probed rides on the
+    // log entry itself.
     const res = await runAudition({
       candidates, role_prompt, probe,
-      provider: budgeted(prov(), { who: (req) => `audition:${req?.model || '?'}`, why: 'audition' }),
+      provider: budgeted(prov(), { who: 'audition', why: 'audition' }),
       // Local models are priced at zero, not unpriced: the row then flows
       // through the same ledger and cost arithmetic as a paid one.
       priceFor: (m) => (isLocalModel(m)
@@ -1230,14 +1233,16 @@ export function createRoom({
     const from = store.snapshotBriefing(n);          // null when there was none
     store.writeBriefing(n, briefing);
     const rev = store.briefingRevision(n);
-    // A brief just written is current by definition, so the staleness clock
-    // restarts here whether or not brief_compact was what prompted the rewrite.
-    try { store.writeCompaction(n, { events_at: store.eventCount(), at: new Date().toISOString() }); } catch {}
 
     store.appendEvent({
       host, author: 'chair', role: 'user',
       text: `briefing updated rev ${rev}: @${n} (${briefing.length} chars)`
     });
+    // A brief just written is current by definition, so the staleness clock
+    // restarts here whether or not brief_compact was what prompted the rewrite.
+    // After the event, not before: the line announcing the rewrite is not
+    // something the rewrite still has to absorb.
+    try { store.writeCompaction(n, { events_at: store.eventCount(), at: new Date().toISOString() }); } catch {}
 
     return {
       ok: true, name: n, revision: rev, from, briefing,
