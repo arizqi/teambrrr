@@ -39,6 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createStore, DEFAULT_STATE_DIR, NAME_RE } from '../../core/state.mjs';
+import { autonomyOf, describeAutonomy, autonomyRule } from '../../core/autonomy.mjs';
 
 export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 export const KEY_ENV = 'OPENROUTER_API_KEY';
@@ -169,6 +170,20 @@ export function soulFor({ name, persona, role, date, stateDir }) {
     `You are ${title}, the ${role} on this team. When someone asks who you are, say so.`,
     '',
     persona.system_prompt || '',
+    '',
+    // In the room, autonomy is advice: the room has no tools, so nobody could
+    // act on it either way. Here it stops being advice. Hermes has a scheduler,
+    // tools and approvals, so the rung the recruit was hired on has to travel
+    // with them or the export quietly promotes an advisor into an operator.
+    '## Autonomy',
+    '',
+    `You were hired at **${describeAutonomy(autonomyOf(persona))}**.`,
+    '',
+    autonomyRule(autonomyOf(persona)),
+    '',
+    'This is the boundary you were hired inside. Where the runtime would let you go ' +
+    'further, you still do not; where the runtime stops you, you say so plainly rather ' +
+    'than working around it.',
     '',
     '## Your prior correspondence',
     '',

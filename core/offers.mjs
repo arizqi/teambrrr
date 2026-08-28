@@ -19,6 +19,8 @@
 //      the user to pick one, and only then calls recruit().
 import { NAME_RE } from './state.mjs';
 import { isLocalModel, parseLocalModel } from './local-models.mjs';
+import { describeAutonomy, normalizeAutonomy, DEFAULT_AUTONOMY } from './autonomy.mjs';
+import { formatJudgeSummary } from './judges.mjs';
 
 export const DAYS_PER_MONTH = 30;
 export const MAX_OFFERS = 3;
@@ -171,10 +173,16 @@ function suggestFallback(row, rows) {
   return (after || live[0]).model;
 }
 
-export function makeOffers({ auditionRows, rows, role, volume, handle, local_warning, max = MAX_OFFERS } = {}) {
+export function makeOffers({
+  auditionRows, rows, role, volume, handle, local_warning, autonomy, max = MAX_OFFERS
+} = {}) {
   const all = auditionRows || rows || [];
   const vol = resolveVolume(volume);
   const baseHandle = handle && NAME_RE.test(handle) ? handle : handleFromRole(role);
+  // The seat's rope, not the model's. It is the same for every card, because it
+  // is a property of what the job is allowed to do — so it is stated once, on
+  // the offer, where the user is actually making the decision.
+  const seatAutonomy = normalizeAutonomy(autonomy) || DEFAULT_AUTONOMY;
 
   const chosen = selectOffers(all, { max, volume: vol });
   if (!chosen.length) {
@@ -206,6 +214,10 @@ export function makeOffers({ auditionRows, rows, role, volume, handle, local_war
       latency_ms: r.latency_ms ?? null,
       score: typeof r.score === 'number' ? r.score : null,
       audition_rank: r.rank ?? null,
+      autonomy: seatAutonomy,
+      judges: formatJudgeSummary(r),
+      judge_scores: r.judge_scores || null,
+      judge_disagreement: r.judge_disagreement === true,
       tier: local ? 'local' : tierOf(cost),
       free: local || cost.free,
       price: r.price || null,
@@ -243,8 +255,9 @@ export function makeOffers({ auditionRows, rows, role, volume, handle, local_war
     role: role || null,
     handle: baseHandle,
     recommended: rec.model,
+    autonomy: seatAutonomy,
     local_warning: local_warning || null,
-    text: formatOffers({ offers, volume: vol, role, handle: baseHandle, local_warning })
+    text: formatOffers({ offers, volume: vol, role, handle: baseHandle, local_warning, autonomy: seatAutonomy })
   };
 }
 
@@ -293,21 +306,25 @@ export function offerLine(o) {
   return parts.join(' · ');
 }
 
-export function formatOffers({ offers, volume, role, handle, local_warning }) {
+export function formatOffers({ offers, volume, role, handle, local_warning, autonomy }) {
   const vol = volume;
   const head =
     `Offers for "${role || handle}" — volume ${vol.profile} ` +
     `(${vol.per_day}/day · ${fmtTokens(vol.tokens_in)} in / ${fmtTokens(vol.tokens_out)} out per exchange)`;
-  const lines = offers.map(offerLine);
+  // A judged card carries the panel's working on its own line rather than a
+  // fourth number in the card: the disagreement is the part worth reading.
+  const lines = offers.flatMap((o) => (o.judges ? [offerLine(o), `    ${o.judges}`] : [offerLine(o)]));
   const fallbacks = offers
     .map((o) => `#${o.n} → ${o.fallback_model || 'none'}`)
     .join(' · ');
+  const seat = normalizeAutonomy(autonomy) || offers[0]?.autonomy || DEFAULT_AUTONOMY;
   return [
     head,
     '',
     ...lines,
     '',
     `fallbacks — ${fallbacks}`,
+    `autonomy — ${describeAutonomy(seat)} (the seat, not the model; set it at hire time)`,
     ...(local_warning ? ['', local_warning] : []),
     'Nobody is hired yet. Pick a number and I will recruit them on that model.'
   ].join('\n');

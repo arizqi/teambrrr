@@ -39,6 +39,22 @@ server.registerTool('recruit', {
     ),
     watch: z.boolean().optional().describe(
       'when true, this recruit reviews each of your turns at Stop and may leave a comment; costs one call per turn'
+    ),
+    autonomy: z.enum(['L0', 'L1', 'L2', 'L3']).optional().describe(
+      'how far this seat may act on its own (default L0). L0 advise-only: proposes, never acts. ' +
+      'L1 reversible acts. L2 impactful but rollbackable, and they name the rollback first. ' +
+      'L3 needs an explicit human yes before any action. Shown on the roster and exported into hermes.'
+    ),
+    authoring_rating: z.object({
+      role_fit: z.number().min(1).max(10),
+      specificity: z.number().min(1).max(10),
+      refusal_clarity: z.number().min(1).max(10),
+      format_clarity: z.number().min(1).max(10),
+      revised: z.boolean().optional(),
+      notes: z.string().optional()
+    }).optional().describe(
+      'YOUR self-rating of the system prompt you just wrote, 1-10 per dimension. The overall is the ' +
+      'MINIMUM, not the mean; below 9 you should have revised the weakest dimension once before hiring.'
     )
   }
 }, async (args) => out(await room.recruit(args)));
@@ -99,6 +115,24 @@ server.registerTool('audition', {
     ),
     local_only: z.boolean().optional().describe(
       'probe ONLY local models — the user said "local only". Any remote candidates passed in are dropped.'
+    ),
+    autonomy: z.enum(['L0', 'L1', 'L2', 'L3']).optional().describe(
+      'the autonomy the SEAT would carry, shown on the offer cards so the user picks a model and a ' +
+      'level of rope in one decision (default L0 advise-only)'
+    ),
+    judges: z.union([
+      z.boolean(),
+      z.object({
+        models: z.array(z.string()).max(3).optional().describe('2-3 cheap models from DIFFERENT families'),
+        rubrics: z.array(z.enum(['honesty', 'specificity', 'instruction_adherence'])).optional(),
+        panel: z.array(z.object({ model: z.string(), rubric: z.string().optional() })).optional()
+      })
+    ]).optional().describe(
+      'ALSO score the replies with a heterogeneous judge panel: 2-3 cheap models from different ' +
+      'families, each given a DIFFERENT anchored rubric (honesty, specificity, instruction adherence). ' +
+      'Per-judge scores and any disagreement are shown. Costs one extra call per candidate per judge, ' +
+      'so say the arithmetic out loud first. The mechanical missing-context trap still vetoes a ' +
+      'fabricating candidate regardless of what the panel thought.'
     )
   }
 }, async (args) => out(await room.audition(args)));
@@ -131,9 +165,37 @@ server.registerTool('evaluate_role', {
     include_local: z.boolean().optional().describe(
       'also evaluate models discovered on this machine, namespaced local/<host>/<model> and priced at $0'
     ),
-    local_only: z.boolean().optional().describe('evaluate ONLY local models — the user said "local only"')
+    local_only: z.boolean().optional().describe('evaluate ONLY local models — the user said "local only"'),
+    autonomy: z.enum(['L0', 'L1', 'L2', 'L3']).optional().describe('autonomy the seat would carry, shown on the offers')
   }
 }, async (args) => out(await room.evaluateRole(args)));
+
+server.registerTool('spend', {
+  title: 'Where the money and the calls went',
+  description:
+    'Per-recruit breakdown of the session: calls made, dollars spent, and what each call was for ' +
+    '(ask, discuss, audition, judging, role-pack evaluation), plus the totals against both ceilings — ' +
+    'the dollar cap (PERSONA_RECRUITER_BUDGET_USD) and the call ceiling ' +
+    '(PERSONA_RECRUITER_BUDGET_CALLS). Reads the attribution log; costs nothing and calls nobody.',
+  inputSchema: {
+    limit: z.number().int().min(1).optional().describe('only consider the most recent N logged calls')
+  }
+}, async (args) => out(room.spend(args || {})));
+
+server.registerTool('brief_compact', {
+  title: "Gather the material to rewrite a recruit's brief",
+  description:
+    'A brief is written once at hire time and goes stale as the room moves on — and it rides on every ' +
+    'call, so a stale brief actively misinforms, at a price. This returns the CURRENT brief plus the ' +
+    'channel since the last compaction, and the instruction for rewriting it in <=800 words with ' +
+    'superseded facts dropped. It calls no model: YOU are the author. Read what it returns, write the ' +
+    'replacement, then call brief_update({name, briefing}) with it. show_persona reports how many ' +
+    'events have passed since the last compaction.',
+  inputSchema: {
+    name: z.string().describe('recruit handle'),
+    max_words: z.number().int().min(100).max(2000).optional().describe('word ceiling for the rewrite (default 800)')
+  }
+}, async (args) => out(room.briefCompact(args)));
 
 server.registerTool('assign_task', {
   title: 'Assign an execution task to a recruit',
@@ -224,7 +286,18 @@ server.registerTool('update_persona', {
     params: z.record(z.any()).optional().describe('completion params (temperature, max_tokens, ...)'),
     model: z.string().optional().describe('rebind to a different OpenRouter model; validated against the catalog'),
     fallback_model: z.string().optional().describe('set the fallback model; pass "" to clear it'),
-    watch: z.boolean().optional().describe('turn the Stop-hook watcher role on or off for this recruit')
+    watch: z.boolean().optional().describe('turn the Stop-hook watcher role on or off for this recruit'),
+    autonomy: z.enum(['L0', 'L1', 'L2', 'L3']).optional().describe(
+      'move this seat up or down the autonomy ladder (L0 advise-only … L3 needs human confirmation)'
+    ),
+    authoring_rating: z.object({
+      role_fit: z.number().min(1).max(10),
+      specificity: z.number().min(1).max(10),
+      refusal_clarity: z.number().min(1).max(10),
+      format_clarity: z.number().min(1).max(10),
+      revised: z.boolean().optional(),
+      notes: z.string().optional()
+    }).optional().describe('your self-rating of the rewritten prompt; overall is the minimum of the four')
   }
 }, async (args) => out(await room.updatePersona(args)));
 

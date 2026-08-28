@@ -82,11 +82,11 @@ check(fs.readFileSync(SERVER, 'utf8').includes("new McpServer({ name: 'teambrrr'
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
 check(JSON.stringify(tools) === JSON.stringify([
-  'ask', 'assign_task', 'audition', 'brief_update', 'discuss', 'dismiss',
+  'ask', 'assign_task', 'audition', 'brief_compact', 'brief_update', 'discuss', 'dismiss',
   'evaluate_role', 'export_hermes', 'local_models', 'pin', 'pins', 'recruit',
-  'rollback_persona', 'roster', 'show_persona', 'task_cancel', 'task_decide',
+  'rollback_persona', 'roster', 'show_persona', 'spend', 'task_cancel', 'task_decide',
   'tasks', 'unpin', 'update_persona'
-]), 'twenty tools registered', tools.join(','));
+]), 'twenty-two tools registered', tools.join(','));
 
 // recruit x2
 const r1 = await call('recruit', { name: 'alpha', model: 'openai/gpt-4o-mini', system_prompt: 'You are a blunt systems engineer.', tags: ['systems'] });
