@@ -8,7 +8,8 @@ description: Run the shared agent room. Use when the user says "recruit", addres
 You are the chair. Recruits are guests in this room; they exist only as
 `teambrrr` MCP tools (`recruit`, `ask`, `discuss`, `audition`,
 `roster`, `dismiss`, `show_persona`, `update_persona`, `rollback_persona`,
-`brief_update`, `pin`, `unpin`, `pins`, `export_hermes`).
+`brief_update`, `brief_compact`, `pin`, `unpin`, `pins`, `spend`,
+`export_hermes`).
 
 The roster is **global** (`~/.room`), shared with every host — a recruit made
 here is reachable from Codex or hermes too, carrying the same history and the
@@ -42,9 +43,14 @@ same spend. A project may shadow a recruit by name via `<project>/.room/`.
   have your tools, your files, or the twelve turns that scrolled off the top.
   When a reply is wrong because they were missing something, the fix is usually
   a pin or a re-brief, not a sharper question.
-- **Money.** Each `ask` costs real tokens and counts against
-  `PERSONA_RECRUITER_BUDGET_USD` (default $1.00, tracked in `~/.room/spend.json`).
-  Do not fan out to the whole roster without being asked to.
+- **Money.** Each `ask` costs real tokens and counts against **two** ceilings:
+  `PERSONA_RECRUITER_BUDGET_USD` (default $1.00, tracked in `~/.room/spend.json`)
+  and `PERSONA_RECRUITER_BUDGET_CALLS` (default 200 calls per room process). Both
+  are reserved *before* each call, so a fan-out cannot overshoot; when one is
+  reached mid-batch, that recruit's block carries the refusal and the rest of the
+  batch still answers. `spend()` breaks it down per recruit and per reason — run
+  it when the user asks what this is costing, or before anything large. Do not
+  fan out to the whole roster without being asked to.
 
 ## Letting them talk to each other — `discuss`
 
@@ -187,6 +193,24 @@ now**, same five sections, then call
 it before you redraft — a re-brief that silently drops a glossary entry is worse
 than the stale one.
 
+### Keeping the brief rolling — `brief_compact`
+
+A brief rides on **every** call that recruit ever receives. So a stale brief is
+not merely unhelpful: it is misinformation, billed per call, forever.
+
+`show_persona({name})` reports how many channel events have passed since the
+brief was last compacted. **Past ~50, suggest a compaction** — and suggest it
+before the user notices the recruit is behind, because by then they have already
+had a bad answer.
+
+`brief_compact({name})` **calls no model**. It hands you the current brief plus
+everything in the channel since the last compaction, and the instruction. You
+are the author: read it, write the replacement in ≤800 words, and call
+`brief_update({name, briefing})`. What compaction is actually for is **dropping
+superseded facts** — a reversed decision, a renamed codename, a state that has
+moved on. A superseded fact is worse than a missing one, because it gets
+believed. Keep the five sections, and never invent to fill one.
+
 ## Pins — standing room context
 
 `pin({text})` adds one line that **every recruit sees on every call**, after
@@ -289,6 +313,68 @@ Note what makes it work: the non-goals are concrete, the heuristics are the
 craft rather than generic advice, and the refusal clause names the specific
 failure and the reason it matters.
 
+### Rate your own draft before you show it — the two-pass gate
+
+You are the author, so you are also the only reviewer the draft gets before it
+becomes somebody's whole personality. **Do this every time, for a system prompt
+and for a briefing alike:**
+
+1. **Rate the draft 1-10 on each of four dimensions**, in your own head or out
+   loud, whichever the moment suits:
+
+   | dimension | the question it answers |
+   |---|---|
+   | **role fit** | would this produce *this* role, or a polite generalist? |
+   | **specificity** | are the heuristics the actual craft, or advice that fits any job? |
+   | **refusal / escalation clarity** | does it say exactly what they do when they lack context? |
+   | **output format clarity** | would two readers agree on what a good answer looks like? |
+
+2. **The overall is the MINIMUM, not the average.** A prompt that is 10, 10, 10
+   and 4 is a 4. Averaging is what lets a missing refusal clause hide behind
+   three strong dimensions — and the missing refusal clause is the one that
+   fabricates against the user's codebase later.
+
+3. **If the overall is below 9, revise once**, addressing the weakest dimension
+   specifically. Not a general polish: name the dimension, fix that, re-rate.
+   One pass. If it is still below 9 after the revision, say so to the user
+   rather than quietly hiring on a draft you know is weak.
+
+4. **Record it** by passing the scores to `recruit` (or `update_persona`):
+
+   ```
+   recruit({ name: "sdr", model: "...", system_prompt: "...", briefing: "...",
+     autonomy: "L0",
+     authoring_rating: { role_fit: 9, specificity: 9, refusal_clarity: 9,
+                         format_clarity: 10, revised: true } })
+   ```
+
+   `show_persona` prints it back. Six months later "why is this recruit vague"
+   is answerable, because the rating says the draft went out at a 6 on
+   specificity and nobody went back.
+
+### Autonomy — how much rope the seat gets
+
+Picking the model and writing the prompt are both about *quality*. Autonomy is
+about *blast radius*, and it is a separate decision that you set at hire time:
+
+| level | means | pick it when |
+|---|---|---|
+| `L0` **advise-only** (default) | proposes, never acts | a colleague you consult |
+| `L1` **reversible acts** | may act where the act is trivially undone | drafting, reading, scratch work |
+| `L2` **impactful, rollbackable** | may act where a rollback exists, and names it first | real work with a way back |
+| `L3` **needs human confirmation** | acts only after an explicit human yes | anything not undoable |
+
+Set it with `autonomy` on `recruit`, change it with `update_persona`, and pass
+it to `audition`/`evaluate_role` so the offer cards state it — the user is
+choosing a model *and* a level of rope, and they should see both at once. It
+shows on the roster, in `show_persona`, and it is written into `SOUL.md` on
+`export_hermes`, where it stops being advice: hermes has tools and a scheduler,
+so an export that dropped the level would silently promote an advisor into an
+operator.
+
+**Default to L0 and say so.** Moving somebody up the ladder is a decision the
+user makes, not a convenience you grant them.
+
 ### After the hire — when the user is unhappy
 
 Recruits are editable, and every edit is versioned. Memory is never touched by
@@ -303,6 +389,9 @@ an edit: they keep every exchange across a rewrite or a rollback.
 | "they're too slow / too expensive" | `update_persona({name, model, fallback_model})` |
 | "re-onboard them", "they're out of date" | redraft the brief, then `brief_update({name, briefing})` |
 | "have them watch what I'm doing" | `update_persona({name, watch: true})` |
+| "let them actually do it / stop them acting" | `update_persona({name, autonomy})` |
+| "what is this costing me?" | `spend()` |
+| "their brief is out of date" (and it is >50 events old) | `brief_compact({name})`, redraft, `brief_update` |
 
 **Persona or brief?** If the complaint is about *how they think* — too hedgy,
 wrong format, wrong voice — that is the persona. If it is about *what they know*
@@ -341,6 +430,16 @@ Never guess a model from memory. Run the funnel:
    `honest` (admitted the missing context), `evasive`, or `FABRICATED` (invented
    a patch for a file it has never seen). A model that fabricates here will
    fabricate against the user's real codebase, so it ranks last by design.
+   Add `judges: true` when the choice turns on **writing quality** rather than
+   on honesty and speed — "who writes the best outreach", "which one explains
+   things clearly". Two or three cheap models from different families read every
+   reply, each under a different anchored rubric (honesty, specificity,
+   instruction adherence), and their per-judge scores and disagreements are shown
+   under each row. It costs **one extra call per candidate per judge** — four
+   candidates and three judges is twelve extra calls, so say that arithmetic out
+   loud first. Where the judges disagree, read the raw replies yourself rather
+   than trusting the mean. A candidate that fabricated is still ranked last no
+   matter what the panel thought of its prose.
 3. **Present the table** and say which way you lean and why.
 4. **The user picks**, then you call `recruit`. `audition` deliberately hires
    nobody — do not treat rank 1 as a decision already made.
