@@ -17,6 +17,17 @@ All notable changes will be documented in this file. The format is based on [Kee
   geometric scoring, retained evidence, and three reference roles.
 - MCP and room APIs for role evaluation, task assignment, inspection, approval,
   and cancellation.
+- Locally-running models as first-class recruits: discovery across Ollama and
+  llama.cpp's `llama-server` (plus any OpenAI-compatible host configured in
+  `<state>/config.json`), `local/<host>/<model>` ids, keyless calls recorded in
+  the spend ledger at `$0`, `include_local` / `local_only` on `audition` and
+  `evaluate_role`, and a `local_models` MCP tool.
+- Measured decode throughput (tok/s) in audition ranking, the results table and
+  offer cards; the existing speed weight now splits between wall-clock latency
+  and measured rate, and is unchanged when no rate is reported.
+- Advisory GPU-contention warnings on local offers and hires, and a documented
+  server-down path: a local recruit falls back to a remote model only when it
+  was hired with a `fallback_model`.
 
 ## [0.1.0] - 2026-08-26
 
