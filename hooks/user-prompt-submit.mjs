@@ -4,7 +4,7 @@
 //  1. Record where this session's transcript lives, so the room can build the
 //     channel digest. This is the one job that must never fail.
 //  2. Route @mentions: when the user addresses a recruit, tell Claude to call
-//     the persona-recruiter `ask` tool instead of answering for them.
+//     the TeamBrrr `ask` tool instead of answering for them.
 //  3. Keep the room present: a one-line room-state reminder while recruits
 //     exist, the pin board when it has changed since it was last injected, and
 //     any watcher comments the Stop hook parked in the inbox.
@@ -30,7 +30,7 @@ const promptOf = (hook) => {
 const routingText = (mentioned) => {
   const list = mentioned.join(', ');
   const arr = `[${mentioned.map((n) => `"${n}"`).join(', ')}]`;
-  return `The user addressed recruit(s) ${list}. You MUST call the persona-recruiter ` +
+  return `The user addressed recruit(s) ${list}. You MUST call the TeamBrrr ` +
     `\`ask\` tool with names ${arr} and the user's message verbatim (strip the @mentions). ` +
     `If each person is asked something different, pass \`per\` as {name: message}. ` +
     `Then re-post each recruit's reply VERBATIM in your response, preserving its ` +

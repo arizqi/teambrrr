@@ -32,6 +32,9 @@ jobs:
       - name: Install MCP server dependencies
         run: npm ci --prefix server
 
+      # The smoke client resolves the SDK from server/node_modules, so the
+      # repository test suite remains valid without a second root install.
+
       - name: Run offline test suite
         run: npm test
         env:
@@ -46,3 +49,6 @@ jobs:
           "import fs from 'node:fs'; import { loadRolePack } from './core/role-packs.mjs';
           for (const file of fs.readdirSync('role-packs'))
           loadRolePack('role-packs/' + file, { root: 'role-packs' });"
+
+      - name: Audit release contents and branding
+        run: npm run audit:release

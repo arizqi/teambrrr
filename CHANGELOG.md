@@ -4,6 +4,14 @@ All notable changes will be documented in this file. The format is based on [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- Rebranded the project to **TeamBrrr** (`teambrrr`) with the tagline “Teams go brrr.”
+- Made `teambrrr` the primary npm package, CLI, MCP identifier, and new Codex
+  configuration key.
+- Kept `persona-recruiter` as a CLI alias and preserved existing MCP config,
+  `PERSONA_RECRUITER_*` environment variables, and `~/.room` state paths.
+
 ### Added
 
 - Apache-2.0 licensing and open-source contribution, conduct, and security policies.

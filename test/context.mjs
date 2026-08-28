@@ -43,7 +43,7 @@ const roomAt = (stateDir, projectDir, provider, extra = {}) => createRoom({
   check(cold.ok && cold.briefing === null, 'a recruit hired with no briefing has none');
   check(/No onboarding brief/.test(cold.text), 'and recruit() says so out loud', cold.text);
 
-  const BRIEF = 'Project: persona-recruiter.\nGoal: recruits start warm.\nCodenames: "the chair" is Claude.';
+  const BRIEF = 'Project: TeamBrrr.\nGoal: recruits start warm.\nCodenames: "the chair" is Claude.';
   const warm = await room.recruit({ name: 'warm', model: 'x/w', system_prompt: 'you are warm', briefing: BRIEF });
   check(warm.ok && warm.briefing === BRIEF, 'recruit() accepts a briefing');
   const briefFile = path.join(stateDir, 'recruits', 'warm', 'briefing.md');

@@ -6,8 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { Client, StdioClientTransport } from './mcp-sdk.mjs';
 import { check, done, SCRATCH } from './_harness.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -17,6 +16,7 @@ const PROJ = path.join(SCRATCH, 'smoke-project');
 const STATE = path.join(SCRATCH, 'smoke-state');       // stands in for ~/.room
 const CODEX_HOME = path.join(SCRATCH, 'smoke-codex');  // empty: keeps auto hermetic
 const HERMES = path.join(SCRATCH, 'smoke-hermes');     // fixture: never the real install
+const PACKAGE = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'package.json'), 'utf8'));
 
 // --- scratch project with a fake transcript in the observed JSONL shape ------
 fs.rmSync(PROJ, { recursive: true, force: true });
@@ -73,7 +73,12 @@ const call = async (name, args = {}) => {
   return { text: (r.content || []).map((c) => c.text).join('\n'), isError: !!r.isError };
 };
 
-console.log('persona-recruiter smoke test (MCP adapter)\n');
+console.log('TeamBrrr smoke test (MCP adapter)\n');
+
+check(PACKAGE.name === 'teambrrr', 'npm package uses the TeamBrrr name');
+check(PACKAGE.bin.teambrrr === './server/index.mjs', 'teambrrr is the primary CLI');
+check(PACKAGE.bin['persona-recruiter'] === './server/index.mjs', 'persona-recruiter CLI remains a compatibility alias');
+check(fs.readFileSync(SERVER, 'utf8').includes("new McpServer({ name: 'teambrrr'"), 'MCP server uses teambrrr as its primary identifier');
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
 check(JSON.stringify(tools) === JSON.stringify([

@@ -4,7 +4,7 @@
 ## The room
 
 Recruits are OpenRouter-backed personas reachable **only** through the
-`persona-recruiter` MCP tools (`recruit`, `ask`, `discuss`, `audition`,
+`teambrrr` MCP tools (`recruit`, `ask`, `discuss`, `audition`,
 `evaluate_role`, `roster`, `dismiss`, `brief_update`, `pin`, `unpin`, `pins`,
 `assign_task`, `tasks`, `task_decide`, `task_cancel`). You are the chair.
 They share a global roster with every other host (`~/.room`).

@@ -108,7 +108,7 @@ export async function callOpenRouter({ model, messages, params, price }) {
         Authorization: `Bearer ${apiKey()}`,
         'Content-Type': 'application/json',
         'HTTP-Referer': 'https://github.com/bountihq',
-        'X-Title': 'persona-recruiter'
+        'X-Title': 'teambrrr'
       },
       body: JSON.stringify({
         model,

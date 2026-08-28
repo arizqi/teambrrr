@@ -1,4 +1,4 @@
-# Contributing to persona-recruiter
+# Contributing to TeamBrrr
 
 Thank you for helping build an open collaboration layer for portable AI colleagues.
 
@@ -43,4 +43,3 @@ By submitting a contribution, you agree that it is licensed under the repository
 ## Reporting security issues
 
 Do not open a public issue for a vulnerability. Follow [SECURITY.md](SECURITY.md).
-

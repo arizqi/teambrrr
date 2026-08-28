@@ -1,11 +1,12 @@
 {
-  "name": "persona-recruiter",
+  "name": "teambrrr",
   "version": "0.1.0",
-  "description": "A portable, host-neutral room for recruiting named OpenRouter-backed AI collaborators.",
+  "description": "TeamBrrr — teams go brrr. A portable room for recruiting named AI collaborators.",
   "license": "Apache-2.0",
   "private": false,
   "type": "module",
   "bin": {
+    "teambrrr": "./server/index.mjs",
     "persona-recruiter": "./server/index.mjs"
   },
   "files": [
@@ -20,6 +21,7 @@
     "hooks/",
     "skills/",
     "role-packs/",
+    "adapters/claude/",
     "adapters/codex/",
     "adapters/execution/",
     "adapters/hermes/",
@@ -31,7 +33,8 @@
   "scripts": {
     "start": "node server/index.mjs",
     "test": "node test/run.mjs",
-    "test:ci": "node test/run.mjs"
+    "test:ci": "node test/run.mjs",
+    "audit:release": "node test/release-audit.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -44,6 +47,7 @@
     "@slack/bolt": "^4.2.0"
   },
   "keywords": [
+    "teambrrr",
     "agents",
     "ai",
     "mcp",

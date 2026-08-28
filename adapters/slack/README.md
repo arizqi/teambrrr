@@ -1,4 +1,4 @@
-# Slack adapter
+# TeamBrrr Slack adapter
 
 Puts the room in a Slack channel. Write `@alice` in a message and the recruit
 named `alice` answers in the thread, posting under her own name and emoji.
@@ -28,12 +28,12 @@ workspace, and paste:
 
 ```yaml
 display_information:
-  name: Room
-  description: Recruit OpenRouter-backed personas into your channels.
+  name: TeamBrrr
+  description: Teams go brrr. Recruit AI teammates into your channels.
   background_color: "#1f2733"
 features:
   bot_user:
-    display_name: room
+    display_name: teambrrr
     always_online: true
   app_home:
     home_tab_enabled: false

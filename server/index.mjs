@@ -15,7 +15,7 @@ const room = createRoom({
 
 const out = (r) => ({ content: [{ type: 'text', text: r.text }], ...(r.ok === false ? { isError: true } : {}) });
 
-const server = new McpServer({ name: 'persona-recruiter', version: '0.1.0' });
+const server = new McpServer({ name: 'teambrrr', version: '0.1.0' });
 
 server.registerTool('recruit', {
   title: 'Recruit an agent into the room',

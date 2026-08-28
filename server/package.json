@@ -1,9 +1,12 @@
 {
-  "name": "persona-recruiter-server",
+  "name": "teambrrr-server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "persona-recruiter": "./index.mjs" },
+  "bin": {
+    "teambrrr": "./index.mjs",
+    "persona-recruiter": "./index.mjs"
+  },
   "scripts": {
     "start": "node index.mjs",
     "test": "node ../test/run.mjs"

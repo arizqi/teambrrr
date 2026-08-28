@@ -43,7 +43,9 @@ export const DEFAULT_HOSTS = {
     base_url: 'http://127.0.0.1:8080',
     list_path: '/v1/models',
     loaded_path: null, // llama-server holds exactly one model: up == loaded
-    start_command: '~/tools_I_want_to_build_and_opensource/llama-qwen36/agentic/start.sh'
+    // A portable hint only. Users with a model-specific launcher can override
+    // this host in <stateDir>/config.json via local_hosts.llama-server.
+    start_command: 'llama-server --host 127.0.0.1 --port 8080 --model <path-to-model>'
   }
 };
 

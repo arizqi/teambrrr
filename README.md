@@ -1,4 +1,6 @@
-# persona-recruiter
+# TeamBrrr
+
+**Teams go brrr.**
 
 A Slack-like room for your agent sessions: recruit named personas backed by
 OpenRouter models — or by models running on your own machine — then address them
@@ -12,6 +14,12 @@ from each tool call — so they answer as if they were in the room.
 
 The roster is **global** — one team, reachable from every host, with shared
 history and one spend cap.
+
+The project was previously called `persona-recruiter`. When you install
+`teambrrr`, the published package also exposes `persona-recruiter` as a legacy
+CLI alias. The old environment-variable namespace, legacy MCP config key, and
+state-layout reference remain supported; existing `~/.room` data is never
+renamed. New installations and documentation use TeamBrrr / `teambrrr`.
 
 ## Architecture
 
@@ -351,18 +359,39 @@ OpenRouter catalog exactly as `recruit` does, so a typo fails at the edit rather
 than at the next `ask`. Personas written before revisions existed read as
 revision 1 rather than crashing.
 
-## Claude Code harness hooks
+## Claude Code setup and harness hooks
 
-A room you have to remember to use is a room you forget to use. Three hooks in
-`hooks/` make it present without being asked; register them in
-`.claude/settings.json`:
+A room you have to remember to use is a room you forget to use. From the Claude
+Code project you want to wire, run the idempotent installer by its checkout
+path (either checkout directory name works):
+
+```sh
+node /path/to/teambrrr/adapters/claude/setup.mjs
+```
+
+It creates or updates `.mcp.json` and `.claude/settings.json`, preserving
+unrelated MCP servers, settings, and hooks. It registers the TeamBrrr MCP
+server plus `SessionStart`, `UserPromptSubmit`, and `Stop`. Use
+the same command with `--dry-run` to preview the changes. Legacy
+`persona-recruiter` entries and owned hook paths are migrated in place so the
+server and hooks are not registered twice.
+
+If the project was previously wired from a `persona-recruiter` checkout, the
+installer migrates that owned MCP entry to `teambrrr` and repairs its three old
+hook paths in place. Unrelated servers and hooks are retained.
+
+The resulting `.mcp.json` has this valid shape (the installer writes the
+absolute checkout path for you):
 
 ```json
-{ "hooks": {
-  "SessionStart":     [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node …/hooks/session-start.mjs" }] }],
-  "UserPromptSubmit": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node …/hooks/user-prompt-submit.mjs" }] }],
-  "Stop":             [{                 "hooks": [{ "type": "command", "command": "node …/hooks/stop.mjs" }] }]
-} }
+{
+  "mcpServers": {
+    "teambrrr": {
+      "command": "node",
+      "args": ["/opt/teambrrr/server/index.mjs"]
+    }
+  }
+}
 ```
 
 | Hook | What it does |
@@ -461,9 +490,12 @@ never moved, and a `.migrated` marker prevents a repeat).
 
 ## Use it from hermes
 
+Run the following from the checkout root; it works whether the checkout
+directory is named `teambrrr` or `persona-recruiter`:
+
 ```js
-import { createRoom } from './persona-recruiter/core/room.mjs';
-import { createEventLogSource } from './persona-recruiter/core/digest/event-log.mjs';
+import { createRoom } from './core/room.mjs';
+import { createEventLogSource } from './core/digest/event-log.mjs';
 
 const room = createRoom({ host: 'hermes', digestSource: createEventLogSource(process.env.ROOM_STATE_DIR) });
 room.events.append({ author: 'user', role: 'user', text: 'ship the migration today?' });
@@ -483,7 +515,7 @@ and the persona calls return `persona` and `revisions`.
 ## Set up Codex
 
 ```sh
-node persona-recruiter/adapters/codex/setup.mjs        # --dry-run to preview
+node adapters/codex/setup.mjs                 # --dry-run to preview
 ```
 
 Idempotent, backs up `config.toml`, and never touches other `[mcp_servers.*]`
@@ -520,3 +552,15 @@ Deps live in `server/`; the top-level `node_modules` symlink points at them. The
 Slack adapter's `@slack/bolt` is declared in `adapters/slack/package.json` and
 installed there only, so the MCP server stays dependency-light.
 Restart Claude Code / reload MCP after changing the wiring.
+
+## Migration from persona-recruiter
+
+`teambrrr` is the primary package, CLI, and MCP identifier. The legacy
+`persona-recruiter` CLI is an alias bundled when `teambrrr` is installed, and an existing
+`[mcp_servers.persona-recruiter]` Codex entry remains valid. The Codex setup
+helper uses `[mcp_servers.teambrrr]` for new installations and will not add a
+duplicate server when it finds the legacy entry.
+
+The `PERSONA_RECRUITER_*` environment variables are intentionally unchanged;
+renaming them would break GUI launches and existing deployments. `~/.room`,
+`.room/`, and legacy `.claude/recruits/` migration paths are also unchanged.

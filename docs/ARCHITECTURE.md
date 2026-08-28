@@ -2,7 +2,7 @@
 
 ## Purpose
 
-persona-recruiter is a local-first collaboration room for named AI recruits. A host assistant remains the chair while independently configured OpenRouter-backed recruits join the conversation through a shared core. It is a collaboration layer, not an autonomous execution sandbox.
+TeamBrrr is a local-first collaboration room for named AI recruits. A host assistant remains the chair while independently configured OpenRouter-backed recruits join the conversation through a shared core. It is a collaboration layer, not an autonomous execution sandbox.
 
 ## Current system
 

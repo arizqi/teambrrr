@@ -155,7 +155,8 @@ check(down.ok === true && down.models.length === 0,
 check(down.hosts.every((h) => h.running === false && h.reason === 'not running'),
   'each host says plainly that it is not running');
 check(down.text.includes('ollama serve'), 'the ollama start command is in the report', down.text);
-check(down.text.includes('start.sh'), 'the llama-server start command is in the report');
+check(down.text.includes('llama-server') && down.text.includes('<path-to-model>'),
+  'the portable llama-server start guidance is in the report');
 
 const halfUp = fakeFetch({ '/api/tags': () => json(TAGS_FIXTURE) });
 const half = await discoverLocalModels({ hosts: localHosts({ stateDir: scratch, env: {} }), fetchImpl: halfUp });
@@ -217,7 +218,7 @@ try {
 check(downError !== null, 'a call to a dead host fails rather than hanging');
 check(downError.status === 503 && downError.local_down === true,
   'the failure is marked transient so a configured fallback can take over');
-check(/not running/.test(downError.message) && /start\.sh/.test(downError.message),
+check(/not running/.test(downError.message) && /llama-server/.test(downError.message) && /<path-to-model>/.test(downError.message),
   'the message names the host and the command that would start it', downError.message);
 
 // A recruit with no fallback gets the server-down message, not a remote model.
@@ -417,7 +418,7 @@ const downRoom = createRoom({
 });
 const nothing = await downRoom.audition({ candidates: [], local_only: true, role_prompt: 'anything' });
 check(nothing.ok === false, 'an audition with no reachable candidates fails cleanly');
-check(/ollama serve/.test(nothing.text) && /start\.sh/.test(nothing.text),
+check(/ollama serve/.test(nothing.text) && /llama-server/.test(nothing.text) && /<path-to-model>/.test(nothing.text),
   'and the failure tells the user exactly what to start', nothing.text);
 
 // --- hiring a local recruit ---------------------------------------------------
@@ -443,7 +444,7 @@ const hopeful = await downRoom.recruit({
   system_prompt: 'x', fallback_model: 'openai/gpt-4o-mini'
 });
 check(hopeful.ok === true, 'hiring against a host that is not running yet is allowed');
-check(/not running/.test(hopeful.text) && /start\.sh/.test(hopeful.text),
+check(/not running/.test(hopeful.text) && /llama-server/.test(hopeful.text) && /<path-to-model>/.test(hopeful.text),
   'the hire says the server is down and how to start it', hopeful.text);
 check(/fall back to openai\/gpt-4o-mini/.test(hopeful.text),
   'a configured fallback is stated at hire time', hopeful.text);

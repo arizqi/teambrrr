@@ -259,7 +259,7 @@ const echoProvider = {
 
 // ------------------------------------------------------- 9. codex setup.mjs ---
 {
-  const { apply } = await import('../adapters/codex/setup.mjs');
+  const { apply, SERVER } = await import('../adapters/codex/setup.mjs');
   const absent = path.join(ROOT, 'no-codex');
   check(apply({ codexHome: absent }).action === 'skipped', 'codex setup is a no-op when codex is not installed');
 
@@ -271,7 +271,7 @@ const echoProvider = {
   const a = apply({ codexHome: home });
   const after = fs.readFileSync(cfg, 'utf8');
   check(a.action === 'appended', 'setup appends to an existing config.toml', a.action);
-  check(after.includes('[mcp_servers.persona-recruiter]') && after.includes('server/index.mjs'), 'our table was written');
+  check(after.includes('[mcp_servers.teambrrr]') && after.includes('server/index.mjs'), 'primary TeamBrrr table was written');
   check(after.includes('[mcp_servers.node_repl.env]') && after.includes('FOO = "bar"'), 'other mcp entries left intact');
 
   const b = apply({ codexHome: home });
@@ -280,7 +280,7 @@ const echoProvider = {
 
   // point only OUR table at a stale path
   fs.writeFileSync(cfg, after.replace(
-    /(\[mcp_servers\.persona-recruiter\]\ncommand = "node"\n)args = \[.*\]/,
+    /(\[mcp_servers\.teambrrr\]\ncommand = "node"\n)args = \[.*\]/,
     '$1args = ["/old/stale/path.mjs"]'
   ));
   const c = apply({ codexHome: home });
@@ -291,7 +291,20 @@ const echoProvider = {
   const fresh = path.join(ROOT, 'codexcfg-fresh');
   fs.mkdirSync(fresh, { recursive: true });
   check(apply({ codexHome: fresh }).action === 'created', 'setup creates config.toml when missing');
-  check(fs.readFileSync(path.join(fresh, 'config.toml'), 'utf8').startsWith('[mcp_servers.persona-recruiter]'), 'created file has no leading blank lines');
+  check(fs.readFileSync(path.join(fresh, 'config.toml'), 'utf8').startsWith('[mcp_servers.teambrrr]'), 'created file has no leading blank lines');
+
+  const legacyHome = mk('codexcfg-legacy');
+  const legacyCfg = path.join(legacyHome, 'config.toml');
+  const legacyRaw = '# keep this comment\n[mcp_servers.persona-recruiter]\ncommand = "node"\nargs = ["/legacy/server/index.mjs"]\nkeep = "owned-table-extra"\n\n[mcp_servers.unrelated]\ncommand = "other"\nargs = ["untouched"]\n';
+  fs.writeFileSync(legacyCfg, legacyRaw);
+  const legacy = apply({ codexHome: legacyHome });
+  const legacyFixed = fs.readFileSync(legacyCfg, 'utf8');
+  check(legacy.action === 'updated' && legacy.id === 'persona-recruiter', 'legacy Codex table is preserved and repaired', legacy.action);
+  check(legacyFixed.includes('[mcp_servers.persona-recruiter]') && legacyFixed.includes(`args = [${JSON.stringify(SERVER)}]`), 'legacy table points to the current server path');
+  check(legacyFixed.startsWith('# keep this comment\n') && legacyFixed.includes('keep = "owned-table-extra"'), 'legacy surrounding and owned metadata are preserved');
+  check(legacyFixed.includes('[mcp_servers.unrelated]\ncommand = "other"\nargs = ["untouched"]'), 'unrelated Codex bytes remain unchanged');
+  const legacyAgain = apply({ codexHome: legacyHome });
+  check(legacyAgain.action === 'legacy-compatible' && fs.readFileSync(legacyCfg, 'utf8') === legacyFixed, 'repaired legacy setup is idempotent');
 }
 
 done();

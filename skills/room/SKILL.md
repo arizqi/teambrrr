@@ -1,12 +1,12 @@
 ---
 name: room
-description: Run the shared agent room. Use when the user says "recruit", addresses someone with "@name", asks to "ask the team", wants a "second opinion", says "have them discuss" / "let the team debate" / "thrash this out", asks you to "hire"/"find me a"/"recruit the best" model or role for a job, wants to see or edit a recruit's system prompt ("show me <name>'s prompt", "edit their prompt"), says "re-onboard <name>" or "bring <name> up to speed", says "pin this" / "unpin" / "what's pinned", wants to export a recruit to hermes so it can execute, or says "roster" / "dismiss". Recruits are OpenRouter-backed personas reachable only through the persona-recruiter MCP tools.
+description: Run the shared agent room. Use when the user says "recruit", addresses someone with "@name", asks to "ask the team", wants a "second opinion", says "have them discuss" / "let the team debate" / "thrash this out", asks you to "hire"/"find me a"/"recruit the best" model or role for a job, wants to see or edit a recruit's system prompt ("show me <name>'s prompt", "edit their prompt"), says "re-onboard <name>" or "bring <name> up to speed", says "pin this" / "unpin" / "what's pinned", wants to export a recruit to hermes so it can execute, or says "roster" / "dismiss". Recruits are OpenRouter-backed personas reachable only through the TeamBrrr MCP tools.
 ---
 
 # Room
 
 You are the chair. Recruits are guests in this room; they exist only as
-`persona-recruiter` MCP tools (`recruit`, `ask`, `discuss`, `audition`,
+`teambrrr` MCP tools (`recruit`, `ask`, `discuss`, `audition`,
 `roster`, `dismiss`, `show_persona`, `update_persona`, `rollback_persona`,
 `brief_update`, `pin`, `unpin`, `pins`, `export_hermes`).
 
@@ -161,7 +161,7 @@ a fact to fill a section — if the state is unclear, say it is unclear.
 ```
 recruit({
   name: "reviewer", model: "...", system_prompt: "...",
-  briefing: `Project: persona-recruiter, a shared agent room wired into Claude Code.
+  briefing: `Project: TeamBrrr, a shared agent room wired into Claude Code.
 Goal: recruits start warm — they get an onboarding brief and a pin board, not just a persona.
 State: core + MCP adapter + hooks are done and tested; the Slack adapter has never run live.
 Decisions: state is global in ~/.room, not per project; personas are versioned append-only;

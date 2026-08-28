@@ -9,6 +9,7 @@ const FILES = [
   'smoke.mjs', 'core.mjs', 'digest.mjs', 'discuss.mjs',
   'audition.mjs', 'offers.mjs', 'persona.mjs', 'context.mjs',
   'hooks.mjs', 'hermes.mjs', 'slack.mjs',
+  'claude-setup.mjs',
   'execution.mjs', 'role-packs.mjs', 'room-extensions.mjs', 'local-models.mjs'
 ];
 

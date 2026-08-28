@@ -44,7 +44,7 @@ then owning the security surface twice.
 So the seam is drawn where the two systems are each already strong:
 
 ```
-   ┌──────────────────────── the room (persona-recruiter) ─────────────────────┐
+   ┌──────────────────────── the room (TeamBrrr) ─────────────────────────────┐
    │                                                                           │
    │   audition ──▶ offers ──▶ [user picks] ──▶ recruit ──▶ ask / discuss       │
    │   4 models     cost/mo     AskUserQuestion   persona     advisory memory   │

@@ -74,9 +74,9 @@ export const PROFILE_DIRS = [
 // written with the instruction and without the secret, and the export prints the
 // one manual step. A tool that spreads your credentials around as a convenience
 // is not being convenient.
-export const KEY_NOTE = (envPath) => `# persona-recruiter export — hermes reads ${KEY_ENV} from THIS file.
+export const KEY_NOTE = (envPath) => `# TeamBrrr export — hermes reads ${KEY_ENV} from THIS file.
 #
-# The key is deliberately NOT written here. persona-recruiter reads it from
+# The key is deliberately NOT written here. TeamBrrr reads it from
 # ${KEY_FILE} (or $${KEY_ENV}) and never copies key material into an
 # exported profile: that would put a second copy of your credential on disk as a
 # silent side effect of exporting a persona.
@@ -164,7 +164,7 @@ export function soulFor({ name, persona, role, date, stateDir }) {
     '',
     `**Role:** ${role}`,
     '',
-    `*Exported from persona-recruiter recruit ${name} on ${date}; memory continues in ${stateDir}.*`,
+    `*Exported from TeamBrrr recruit ${name} on ${date}; memory continues in ${stateDir}.*`,
     '',
     `You are ${title}, the ${role} on this team. When someone asks who you are, say so.`,
     '',
@@ -172,7 +172,7 @@ export function soulFor({ name, persona, role, date, stateDir }) {
     '',
     '## Your prior correspondence',
     '',
-    'You were hired and worked in the room (persona-recruiter) before you were',
+    'You were hired and worked in the TeamBrrr room before you were',
     'exported here. Every exchange you had there is on disk at:',
     '',
     `    ${historyPath}`,
@@ -213,7 +213,7 @@ export function profileYamlFor({ name, role, model, at }) {
     `          model: ${yq(model)}`,
     `          baseUrl: ${yq(OPENROUTER_BASE_URL)}`,
     `        at: ${yq(at)}`,
-    "        note: 'exported from persona-recruiter'",
+    "        note: 'exported from TeamBrrr'",
     `    updatedAt: ${yq(at)}`,
     ''
   ].join('\n');
