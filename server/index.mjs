@@ -22,11 +22,16 @@ server.registerTool('recruit', {
   description: 'Create a named recruit backed by an OpenRouter model. Validates the model id against the OpenRouter catalog.',
   inputSchema: {
     name: z.string().describe('lowercase handle, 2-24 chars: ^[a-z0-9_-]{2,24}$'),
-    model: z.string().describe('OpenRouter model id, e.g. "openai/gpt-4o-mini"'),
+    model: z.string().describe(
+      'OpenRouter model id, e.g. "openai/gpt-4o-mini", or a local one: "local/ollama/<model>" / "local/llama-server/<model>"'
+    ),
     system_prompt: z.string().describe('the persona: who they are and how they should think'),
     tags: z.array(z.string()).optional().describe('topic tags, e.g. ["security","rust"]'),
     params: z.record(z.any()).optional().describe('extra completion params (temperature, max_tokens, ...)'),
-    fallback_model: z.string().optional().describe('model to retry on when the primary is rate limited or erroring'),
+    fallback_model: z.string().optional().describe(
+      'model to retry on when the primary is rate limited or erroring. For a local recruit this is also what runs ' +
+      'when their server is down — omit it and calls report the server-down message instead of going remote.'
+    ),
     briefing: z.string().optional().describe(
       'ONBOARDING BRIEF, 10-20 lines, written by YOU from everything you know that they cannot see: ' +
       'the project and its goal, where it stands now, the decisions already taken, a glossary of local ' +
@@ -69,12 +74,13 @@ server.registerTool('audition', {
     'Send one cheap probe to each candidate model in parallel and score the replies mechanically: ' +
     'honesty about missing context (the probe names a file that does not exist), length discipline, ' +
     'latency and cost. Returns a ranked table plus the raw replies. Recruits nobody — you pick, then call recruit. ' +
-    'Pass `role` to also get 2-3 offer cards with a monthly cost projection — then ask the user to pick one.',
+    'Pass `role` to also get 2-3 offer cards with a monthly cost projection — then ask the user to pick one. ' +
+    'Pass `include_local` (or `local_only`) to discover and probe models running on this machine, which cost $0.',
   inputSchema: {
     candidates: z.array(z.object({
-      model: z.string().describe('OpenRouter model id'),
+      model: z.string().describe('OpenRouter model id, or "local/<host>/<model>"'),
       fallback_model: z.string().optional().describe('model to retry on when this one rate limits')
-    })).describe('the models trying out, up to 4 probed at a time'),
+    })).optional().describe('the models trying out, up to 4 probed at a time; may be omitted when local_only is set'),
     role_prompt: z.string().describe('the role they are auditioning for — becomes the probe task'),
     probe: z.string().optional().describe('override the task half of the probe; the missing-context trap is always appended'),
     role: z.string().optional().describe('the job title being hired for, e.g. "SDR" — turns the result into selectable offer cards with cost'),
@@ -85,25 +91,47 @@ server.registerTool('audition', {
         tokens_in: z.number().optional(),
         tokens_out: z.number().optional()
       })
-    ]).optional().describe('expected usage for the cost projection: a profile name (advisor=30/day, worker=300/day, heavy=1500/day) or explicit {per_day, tokens_in, tokens_out}')
+    ]).optional().describe('expected usage for the cost projection: a profile name (advisor=30/day, worker=300/day, heavy=1500/day) or explicit {per_day, tokens_in, tokens_out}'),
+    include_local: z.boolean().optional().describe(
+      'also discover models running on this machine (Ollama, llama-server) and probe them alongside the given ' +
+      'candidates. They are namespaced local/<host>/<model>, cost $0, and are ranked on measured tok/s. ' +
+      'A host that is not running is reported with its start command, never as an error.'
+    ),
+    local_only: z.boolean().optional().describe(
+      'probe ONLY local models — the user said "local only". Any remote candidates passed in are dropped.'
+    )
   }
 }, async (args) => out(await room.audition(args)));
+
+server.registerTool('local_models', {
+  title: 'List models running on this machine',
+  description:
+    'Report the local model hosts (Ollama at :11434, llama-server at :8080, plus anything configured in ' +
+    '<state>/config.json) with the models each one serves. A host that is not running is reported as such, ' +
+    'with the command that would start it. Costs nothing and probes nothing.',
+  inputSchema: {}
+}, async () => out(await room.localModels()));
 
 server.registerTool('evaluate_role', {
   title: 'Evaluate models against a versioned role pack',
   description:
     'Run repeated, role-specific cases against 1-4 candidate models. Uses deterministic evaluators, ' +
-    'fatal safety criteria, consistency, latency and cost evidence; returns 2-3 offers but hires nobody.',
+    'fatal safety criteria, consistency, latency and cost evidence; returns 2-3 offers but hires nobody. ' +
+    'Pass `include_local` (or `local_only`) to evaluate models running on this machine, which cost $0.',
   inputSchema: {
     role_pack: z.string().describe('bundled role-pack id, e.g. sdr-outbound, security-reviewer, code-reviewer'),
     candidates: z.array(z.object({
-      model: z.string().describe('OpenRouter model id'),
+      model: z.string().describe('OpenRouter model id, or "local/<host>/<model>"'),
       fallback_model: z.string().optional(),
       params: z.record(z.any()).optional()
-    })).min(1).max(4),
+    })).min(1).max(4).optional().describe('may be omitted when local_only is set'),
     trials: z.number().int().min(1).max(5).optional().describe('override trials per case; defaults to the pack'),
     max_parallel: z.number().int().min(1).max(4).optional(),
-    offers: z.boolean().optional().describe('include selectable monthly-cost offers (default true)')
+    offers: z.boolean().optional().describe('include selectable monthly-cost offers (default true)'),
+    include_local: z.boolean().optional().describe(
+      'also evaluate models discovered on this machine, namespaced local/<host>/<model> and priced at $0'
+    ),
+    local_only: z.boolean().optional().describe('evaluate ONLY local models — the user said "local only"')
   }
 }, async (args) => out(await room.evaluateRole(args)));
 
