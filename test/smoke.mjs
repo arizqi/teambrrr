@@ -78,10 +78,10 @@ console.log('persona-recruiter smoke test (MCP adapter)\n');
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
 check(JSON.stringify(tools) === JSON.stringify([
   'ask', 'assign_task', 'audition', 'brief_update', 'discuss', 'dismiss',
-  'evaluate_role', 'export_hermes', 'pin', 'pins', 'recruit',
+  'evaluate_role', 'export_hermes', 'local_models', 'pin', 'pins', 'recruit',
   'rollback_persona', 'roster', 'show_persona', 'task_cancel', 'task_decide',
   'tasks', 'unpin', 'update_persona'
-]), 'nineteen tools registered', tools.join(','));
+]), 'twenty tools registered', tools.join(','));
 
 // recruit x2
 const r1 = await call('recruit', { name: 'alpha', model: 'openai/gpt-4o-mini', system_prompt: 'You are a blunt systems engineer.', tags: ['systems'] });

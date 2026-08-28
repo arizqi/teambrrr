@@ -337,6 +337,26 @@ check(offered.text.includes('GPU contention'), 'the contention warning rides on 
 // --- room integration: ledger, local_only, graceful degradation --------------
 
 const roomState = path.join(scratch, 'room-state');
+const downState = path.join(scratch, 'down-state');
+
+// Seed the OpenRouter catalogue cache in both rooms. The room only consults it
+// for remote ids, but seeding it keeps this file hermetic: loadModels returns
+// from a fresh cache before it considers a network call, so these tests never
+// reach a socket even on a machine that has a key.
+const CATALOG = {
+  fetched_at: Date.now(),
+  models: {
+    'openai/gpt-4o-mini': {
+      name: 'GPT-4o mini', context_length: 128000,
+      pricing: { prompt: '0.00000015', completion: '0.0000006' }
+    }
+  }
+};
+for (const dir of [roomState, downState]) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'models-cache.json'), JSON.stringify(CATALOG));
+}
+
 const spent = [];
 const roomProvider = {
   name: 'local',
@@ -391,7 +411,7 @@ check(mixed.text.includes('Local model hosts:'), 'the host report is part of the
 
 // A room whose hosts are all down still answers, and says what to start.
 const downRoom = createRoom({
-  stateDir: path.join(scratch, 'down-state'), projectDir: scratch, provider: roomProvider,
+  stateDir: downState, projectDir: scratch, provider: roomProvider,
   autoMigrate: false, retryDelayMs: 0,
   localDiscovery: () => discoverLocalModels({ hosts: localHosts({ stateDir: scratch, env: {} }), fetchImpl: allDown })
 });
