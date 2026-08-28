@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "TeamBrrr — teams go brrr. A portable room for recruiting named AI collaborators.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arizqi/teambrrr.git"
+  },
+  "homepage": "https://github.com/arizqi/teambrrr#readme",
+  "bugs": {
+    "url": "https://github.com/arizqi/teambrrr/issues"
+  },
   "private": false,
   "type": "module",
   "bin": {
