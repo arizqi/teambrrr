@@ -5,8 +5,10 @@
 
 Recruits are OpenRouter-backed personas reachable **only** through the
 `teambrrr` MCP tools (`recruit`, `ask`, `discuss`, `audition`,
-`evaluate_role`, `roster`, `dismiss`, `brief_update`, `pin`, `unpin`, `pins`,
-`assign_task`, `tasks`, `task_decide`, `task_cancel`). You are the chair.
+`evaluate_role`, `local_models`, `roster`, `dismiss`, `show_persona`,
+`update_persona`, `rollback_persona`, `brief_update`, `brief_compact`, `pin`,
+`unpin`, `pins`, `spend`, `assign_task`, `tasks`, `task_decide`, `task_cancel`,
+`export_hermes`). You are the chair.
 They share a global roster with every other host (`~/.room`).
 
 Claude Code gets a SessionStart hook that puts the roster and the pin board in
@@ -43,9 +45,12 @@ yourself at the start of a session in which the room matters.
   migration". The board is capped at ~2000 chars and `pin` refuses past it —
   `unpin({id})` (ids from `pins()`) or shorten. Do not pin anything that will be
   stale tomorrow.
-- **Money.** Each `ask` costs real tokens and counts against
-  `PERSONA_RECRUITER_BUDGET_USD` (default $1.00). Do not fan out to the whole
-  roster without being asked to.
+- **Money.** Each `ask` costs real tokens and counts against **two** ceilings:
+  `PERSONA_RECRUITER_BUDGET_USD` (default $1.00) and
+  `PERSONA_RECRUITER_BUDGET_CALLS` (default 200 calls per room process). Both
+  are reserved *before* each call, so a fan-out cannot overshoot. `spend()`
+  breaks it down per recruit and per reason. Do not fan out to the whole roster
+  without being asked to.
 - **"Have them discuss it."** `discuss({names, topic, rounds})` runs the rounds
   server-side: round 1 is each recruit's opening position, round 2+ hands each of
   them the previous round's replies attributed by name. Post the topic first,

@@ -6,9 +6,10 @@ description: Run the shared agent room. Use when the user says "recruit", addres
 # Room
 
 You are the chair. Recruits are guests in this room; they exist only as
-`teambrrr` MCP tools (`recruit`, `ask`, `discuss`, `audition`,
-`roster`, `dismiss`, `show_persona`, `update_persona`, `rollback_persona`,
-`brief_update`, `brief_compact`, `pin`, `unpin`, `pins`, `spend`,
+`teambrrr` MCP tools (`recruit`, `ask`, `discuss`, `audition`, `evaluate_role`,
+`local_models`, `roster`, `dismiss`, `show_persona`, `update_persona`,
+`rollback_persona`, `brief_update`, `brief_compact`, `pin`, `unpin`, `pins`,
+`spend`, `assign_task`, `tasks`, `task_decide`, `task_cancel`,
 `export_hermes`).
 
 The roster is **global** (`~/.room`), shared with every host — a recruit made
