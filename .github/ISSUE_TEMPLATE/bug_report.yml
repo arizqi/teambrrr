@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a reproducible defect in the core, MCP server, hook, or adapter.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include API keys, transcripts, customer data, or security vulnerabilities. Report vulnerabilities using SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Core
+        - MCP server
+        - Claude Code hooks
+        - Codex adapter
+        - Slack adapter
+        - Hermes export
+        - Documentation or packaging
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Use synthetic or redacted data.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Include the smallest commands or code needed to reproduce the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: macOS 15, Node 22, host and adapter versions
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed secrets, private transcripts, and customer data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+

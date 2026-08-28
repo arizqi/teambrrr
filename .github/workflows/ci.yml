@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install MCP server dependencies
+        run: npm ci --prefix server
+
+      - name: Run offline test suite
+        run: npm test
+        env:
+          OPENROUTER_API_KEY: ""
+
+      - name: Verify execution foundation
+        run: node test/execution.mjs
+
+      - name: Validate bundled role packs
+        run: >-
+          node --input-type=module -e
+          "import fs from 'node:fs'; import { loadRolePack } from './core/role-packs.mjs';
+          for (const file of fs.readdirSync('role-packs'))
+          loadRolePack('role-packs/' + file, { root: 'role-packs' });"

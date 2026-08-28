@@ -1,0 +1,56 @@
+{
+  "name": "persona-recruiter",
+  "version": "0.1.0",
+  "description": "A portable, host-neutral room for recruiting named OpenRouter-backed AI collaborators.",
+  "license": "Apache-2.0",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "persona-recruiter": "./server/index.mjs"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "CODE_OF_CONDUCT.md",
+    "core/",
+    "server/index.mjs",
+    "hooks/",
+    "skills/",
+    "role-packs/",
+    "adapters/codex/",
+    "adapters/execution/",
+    "adapters/hermes/",
+    "adapters/slack/bot.mjs",
+    "adapters/slack/README.md",
+    "docs/",
+    "test/"
+  ],
+  "scripts": {
+    "start": "node server/index.mjs",
+    "test": "node test/run.mjs",
+    "test:ci": "node test/run.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "optionalDependencies": {
+    "@slack/bolt": "^4.2.0"
+  },
+  "keywords": [
+    "agents",
+    "ai",
+    "mcp",
+    "openrouter",
+    "multi-agent",
+    "claude-code",
+    "codex",
+    "slack"
+  ]
+}

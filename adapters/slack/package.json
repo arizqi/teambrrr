@@ -1,0 +1,14 @@
+{
+  "name": "persona-recruiter-slack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Slack (Socket Mode) adapter for the persona-recruiter room. Deps live here only — the MCP server in ../../server must not carry them.",
+  "main": "bot.mjs",
+  "scripts": {
+    "start": "node bot.mjs"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.2.0"
+  }
+}

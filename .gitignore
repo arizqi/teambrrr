@@ -1,0 +1,33 @@
+node_modules/
+node_modules
+**/node_modules/
+
+# Local room and host state
+.room/
+.claude/
+.codex/
+.mcp.json
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs, coverage, and build output
+*.log
+logs/
+coverage/
+.nyc_output/
+dist/
+build/
+*.tgz
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
