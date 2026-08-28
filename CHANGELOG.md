@@ -11,9 +11,37 @@ All notable changes will be documented in this file. The format is based on [Kee
   configuration key.
 - Kept `persona-recruiter` as a CLI alias and preserved existing MCP config,
   `PERSONA_RECRUITER_*` environment variables, and `~/.room` state paths.
+- Rewrote the README around recruiting on OpenRouter and moved the depth into
+  `docs/HIRING.md` (audition, judges, offers, autonomy, persona lifecycle) and
+  `docs/HOSTS.md` (context assembly, host wiring, local models, state, env).
 
 ### Added
 
+- A shared `CallBudget` guarding every provider call site: the estimated cost is
+  reserved before dispatch and settled afterwards, so a parallel fan-out can no
+  longer overshoot the cap. Two ceilings apply — `PERSONA_RECRUITER_BUDGET_USD`
+  (read fresh from the persisted ledger) and `PERSONA_RECRUITER_BUDGET_CALLS`
+  (per room process, default 200).
+- Per-call spend attribution to `<state>/spend-log.jsonl` and a `spend` MCP tool
+  reporting calls and dollars per recruit and per reason against both ceilings.
+- Audition scoring rebuilt around a weighted geometric mean with a fabrication
+  veto, a three-outcome trap verdict, and separate latency and throughput
+  weights.
+- An optional heterogeneous judge panel for auditions: two or three cheap models
+  from different vendors, each scoring one anchored rubric, with disagreement
+  reported rather than averaged; the panel never overrides the mechanical trap.
+- The autonomy ladder (`L0`–`L3`) as a property of the seat: set on `recruit`,
+  changed with `update_persona`, shown on offer cards and the roster, injected
+  into the teammate's system prompt, and written into the hermes export.
+- A two-pass prompt-authoring gate: an `authoring_rating` on `recruit` and
+  `update_persona` scored as the minimum of four dimensions, stored with the
+  persona and printed by `show_persona`.
+- Rolling brief maintenance: a `brief_compact` MCP tool that returns the current
+  brief, the channel since the last compaction and the rewrite instruction
+  without calling a model, plus brief-staleness reporting in `show_persona`.
+- Warm plug-in context: named, fenced and independently guarded persona, brief,
+  pin and transcript blocks, ordered so the authoritative blocks precede the
+  ambient ones.
 - Apache-2.0 licensing and open-source contribution, conduct, and security policies.
 - Root npm package and workspace metadata.
 - CI coverage for supported Node.js releases.
@@ -48,4 +76,5 @@ All notable changes will be documented in this file. The format is based on [Kee
 - Tested Slack Socket Mode adapter logic and a Hermes profile export bridge.
 - Offline test suite covering the current core and adapters.
 
-Release comparison links will be added when the public repository URL exists.
+Release comparison links will be added when the first release is tagged; the
+repository has no version tags yet.
