@@ -9,6 +9,6 @@
     "start": "node bot.mjs"
   },
   "dependencies": {
-    "@slack/bolt": "^4.2.0"
+    "@slack/bolt": "^5.0.0"
   }
 }
