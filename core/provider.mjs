@@ -1,6 +1,14 @@
-// Providers: openrouter (real) and mock (deterministic, no network, no spend).
+// Providers: openrouter (real), local (any OpenAI-compatible server on this
+// machine, no API key, no spend) and mock (deterministic, no network).
+//
+// Local models are routed by their id rather than by a separate provider
+// object: a candidate whose model starts with "local/" goes to callLocal, and
+// everything else goes where it always went. That is what lets a local
+// candidate be auditioned, ranked, offered and hired by the same code as a
+// remote one, and lets a room with no OpenRouter key at all still work.
 import fs from 'node:fs';
 import path from 'node:path';
+import { isLocalModel, parseLocalModel, localHosts, chatUrlFor } from './local-models.mjs';
 
 const MODELS_URL = 'https://openrouter.ai/api/v1/models';
 const CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -123,6 +131,78 @@ export async function callOpenRouter({ model, messages, params, price }) {
   return { text, cost: costFrom(j.usage, price), usage: j.usage || null };
 }
 
+// --- local -------------------------------------------------------------------
+// Any OpenAI-compatible server on this machine: Ollama's /v1 shim, llama-server,
+// or whatever else the user configured. No Authorization header — sending one
+// to a local server is at best noise and at worst a leaked key.
+//
+// Cost is always exactly 0, and it is still returned as a number rather than
+// null so the row goes through the same ledger arithmetic as a paid one. A
+// local model is free, not unpriced.
+export const LOCAL_TIMEOUT_MS = 120_000;
+
+// Throughput, measured rather than claimed: completion tokens over the wall
+// clock of this one call. Null when the server did not report usage.
+export function tokensPerSec(usage, ms) {
+  const out = Number(usage?.completion_tokens);
+  if (!Number.isFinite(out) || out <= 0 || !Number.isFinite(ms) || ms <= 0) return null;
+  return Number((out / (ms / 1000)).toFixed(1));
+}
+
+export async function callLocal({ model, messages, params, hosts, fetchImpl = fetch, timeoutMs = LOCAL_TIMEOUT_MS } = {}) {
+  const parsed = parseLocalModel(model);
+  if (!parsed) throw new Error(`not a local model id: "${model}" (expected local/<host>/<model>)`);
+  const table = hosts || localHosts();
+  const cfg = table[parsed.host];
+  if (!cfg) {
+    throw new Error(`unknown local host "${parsed.host}" — configure it in <state>/config.json under local_hosts`);
+  }
+
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+  const started = Date.now();
+  let res;
+  try {
+    res = await fetchImpl(chatUrlFor(cfg), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: parsed.model,
+        messages: messages.map(({ role, content }) => ({ role, content })),
+        ...(params || {})
+      }),
+      signal: ac.signal
+    });
+  } catch (e) {
+    // The server is not there. This is the ordinary case on a laptop, so it is
+    // reported as a transient 503 rather than a hard failure: callWithRetry
+    // then uses the recruit's fallback_model if — and only if — they were hired
+    // with one. With no fallback, this message is what the user sees.
+    const err = new Error(
+      `local host "${parsed.host}" is not running at ${cfg.base_url} — start it with: ${cfg.start_command}`
+    );
+    err.status = 503;
+    err.local_down = true;
+    throw err;
+  } finally {
+    clearTimeout(t);
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const e = new Error(`local/${parsed.host} ${res.status}: ${body.slice(0, 400)}`);
+    e.status = res.status;
+    throw e;
+  }
+  const j = await res.json();
+  const text = j.choices?.[0]?.message?.content ?? '';
+  const usage = j.usage || null;
+  // Floored at 1ms: a sub-millisecond reading is clock resolution, not an
+  // absence of a measurement, and dividing by it would throw the rate away.
+  const latency_ms = Math.max(1, Date.now() - started);
+  return { text, cost: 0, usage, local: true, host: parsed.host, latency_ms, tokens_per_sec: tokensPerSec(usage, latency_ms) };
+}
+
 // --- retry ------------------------------------------------------------------
 // One shared call path for every caller (ask, discuss, audition): retry once on
 // a transient status, then once more on the fallback model if there is one.
@@ -137,7 +217,9 @@ export async function callWithRetry({
     return await attempt(model);
   } catch (e1) {
     if (!RETRYABLE(e1)) throw e1;
-    await sleep(retryDelayMs);
+    // A refused connection will still be refused in two seconds; only wait for
+    // things that are plausibly transient.
+    if (!e1.local_down) await sleep(retryDelayMs);
     try {
       return await attempt(model);
     } catch (e2) {
@@ -151,11 +233,23 @@ export async function callWithRetry({
 }
 
 // The object room.mjs actually talks to. Swap it out in tests.
+//
+// The provider is named for where the *remote* calls go, because that is what
+// determines whether model ids get validated against a catalog and whether any
+// money can be spent. Local ids are routed underneath that name: a room with no
+// OpenRouter key is still a "mock" room for remote models, but its local
+// recruits are real. Forcing PERSONA_RECRUITER_PROVIDER=mock overrides
+// everything, so a test never reaches a socket.
 export function defaultProvider() {
   const name = providerName();
+  if (process.env.PERSONA_RECRUITER_PROVIDER === 'mock') {
+    return { name: 'mock', call: callMock, validates: false, local: false };
+  }
+  const remote = name === 'mock' ? callMock : callOpenRouter;
   return {
     name,
-    call: name === 'mock' ? callMock : callOpenRouter,
-    validates: name !== 'mock'
+    call: (req) => (isLocalModel(req?.model) ? callLocal(req) : remote(req)),
+    validates: name !== 'mock',
+    local: true
   };
 }

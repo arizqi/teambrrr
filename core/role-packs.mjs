@@ -400,6 +400,13 @@ function aggregateCandidate(candidate, trials, pack) {
   const totalCost = successful.reduce((sum, trial) => sum + (finite(trial.cost) ? trial.cost : 0), 0);
   const knownCosts = successful.filter((trial) => finite(trial.cost)).length;
   const latency = successful.length ? successful.reduce((sum, trial) => sum + trial.latency_ms, 0) / successful.length : 0;
+  // Measured decode rate, averaged over the trials that reported usage. Null
+  // when nobody did — an absent measurement is not a slow one.
+  const rated = successful.filter((trial) =>
+    finite(Number(trial.usage?.completion_tokens)) && Number(trial.usage.completion_tokens) > 0 && trial.latency_ms > 0);
+  const tokensPerSec = rated.length
+    ? rated.reduce((sum, trial) => sum + Number(trial.usage.completion_tokens) / (trial.latency_ms / 1000), 0) / rated.length
+    : null;
   const passCount = trials.filter((trial) => trial.passed).length;
   const needsManual = pending > 0;
   const eligible = !fatalFailure && !needsManual && successful.length === trials.length;
@@ -417,6 +424,7 @@ function aggregateCandidate(candidate, trials, pack) {
     passed_trials: passCount,
     total_trials: trials.length,
     latency_ms: round(latency, 2),
+    tokens_per_sec: tokensPerSec === null ? null : round(tokensPerSec, 1),
     cost: knownCosts ? round(totalCost) : null,
     pending_manual: pending,
     fatal_failure: fatalFailure,

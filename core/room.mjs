@@ -11,6 +11,9 @@ import {
   revisionOf, updatedAtOf, stripInternal
 } from './state.mjs';
 import { defaultProvider, loadModels, priceOf, providerName, callWithRetry } from './provider.mjs';
+import {
+  discoverLocalModels, localContention, localCandidates, isLocalModel, parseLocalModel
+} from './local-models.mjs';
 import { createAutoSource } from './digest/auto.mjs';
 import { MAX_DIGEST_CHARS, NO_DIGEST } from './digest/util.mjs';
 import { runAudition } from './audition.mjs';
@@ -68,6 +71,8 @@ export function createRoom({
   budget = Number(process.env.PERSONA_RECRUITER_BUDGET_USD || '1.00'),
   priceFor,
   executionBridge,
+  localDiscovery,
+  localContentionFn,
   rolePackDir = process.env.ROOM_ROLE_PACK_DIR || BUILTIN_ROLE_PACK_DIR,
   maxDigestChars = MAX_DIGEST_CHARS,
   retryDelayMs = 2000,
@@ -87,24 +92,85 @@ export function createRoom({
   const models = ({ allowFetch = true } = {}) =>
     loadModels(store.modelsCachePath(), { allowFetch });
 
+  // --- local hosts -----------------------------------------------------------
+  // Models running on this machine. Injectable so the tests never touch a
+  // socket, and so a host adapter can point the room at a remote GPU box.
+  const discoverLocal = localDiscovery || ((opts) => discoverLocalModels({ stateDir, ...opts }));
+  const checkContention = localContentionFn || ((opts) => localContention({ stateDir, ...opts }));
+
+  // Never throws and never blocks a decision: a machine with no local stack is
+  // the ordinary case, and the answer is an empty field, not an error.
+  async function localModels() {
+    try { return await discoverLocal({}); }
+    catch (e) {
+      return {
+        ok: false, hosts: [], models: [], running: [], down: [],
+        text: `Local discovery failed: ${String(e?.message || e).slice(0, ERR_CHARS)}`
+      };
+    }
+  }
+
+  async function contentionFor(model) {
+    try { return (await checkContention({ model })).warning; }
+    catch { return null; }
+  }
+
   // The catalog is the only source of truth for whether a model id exists. Both
   // recruit() and update_persona() go through here, so a typo fails at the point
   // of change rather than at the next ask().
   async function checkModels({ model, fallback_model } = {}) {
-    if (prov().name === 'mock') return { ok: true, priceNote: ' — mock provider, model not validated' };
+    // A local id is checked against the machine, not the catalog. A host that
+    // is down is NOT a validation failure: hiring somebody before starting
+    // their server is a legitimate order of operations, so it becomes a note.
+    let localNote = '';
+    if (isLocalModel(model)) {
+      const found = await checkLocalModel(model);
+      if (!found.ok) return found;
+      localNote = found.note || '';
+    }
+    const remote = [model, fallback_model].filter((m) => m && !isLocalModel(m));
+    if (isLocalModel(fallback_model)) {
+      const found = await checkLocalModel(fallback_model);
+      if (!found.ok) return found;
+    }
+    if (!remote.length) return { ok: true, priceNote: `${localNote} — $0 (local)` };
+    if (prov().name === 'mock') return { ok: true, priceNote: `${localNote} — mock provider, model not validated` };
     const loaded = await models();
-    if (!loaded) return { ok: true, priceNote: ' — model not validated (catalog unavailable)' };
-    if (model && !loaded.models[model]) {
+    if (!loaded) return { ok: true, priceNote: `${localNote} — model not validated (catalog unavailable)` };
+    if (model && !isLocalModel(model) && !loaded.models[model]) {
       return { ok: false, error: `unknown OpenRouter model "${model}" (catalog from ${loaded.source})` };
     }
-    if (fallback_model && !loaded.models[fallback_model]) {
+    if (fallback_model && !isLocalModel(fallback_model) && !loaded.models[fallback_model]) {
       return { ok: false, error: `unknown fallback_model "${fallback_model}" (catalog from ${loaded.source})` };
     }
-    const p = model ? priceOf(loaded.models, model) : null;
+    const p = model && !isLocalModel(model) ? priceOf(loaded.models, model) : null;
     return {
       ok: true,
-      priceNote: p ? ` — $${(p.prompt * 1e6).toFixed(2)}/M in, $${(p.completion * 1e6).toFixed(2)}/M out` : ''
+      priceNote: localNote + (p ? ` — $${(p.prompt * 1e6).toFixed(2)}/M in, $${(p.completion * 1e6).toFixed(2)}/M out` : '')
     };
+  }
+
+  // Three outcomes, deliberately: installed (fine), host up but no such model
+  // (a typo, and the one case worth refusing), host down (fine, with a note).
+  async function checkLocalModel(id) {
+    const parsed = parseLocalModel(id);
+    if (!parsed) return { ok: false, error: `malformed local model id "${id}" — expected local/<host>/<model>` };
+    const d = await localModels();
+    const host = d.hosts.find((h) => h.host === parsed.host);
+    if (!host) {
+      return { ok: false, error: `unknown local host "${parsed.host}" — known hosts: ${d.hosts.map((h) => h.host).join(', ') || 'none'}` };
+    }
+    if (!host.running) {
+      return { ok: true, note: ` — ${parsed.host} is not running (${host.reason || 'not running'}); start it with: ${host.start_command}` };
+    }
+    if (!host.models.some((m) => m.model === parsed.model || m.id === id)) {
+      return {
+        ok: false,
+        error: `local host "${parsed.host}" is running but has no model "${parsed.model}". Installed: ` +
+          (host.models.map((m) => m.model).join(', ') || 'none')
+      };
+    }
+    return { ok: true, note: '' };
   }
 
   // --- recruit ---------------------------------------------------------------
@@ -142,10 +208,19 @@ export function createRoom({
       ? ` Onboarding brief stored (rev 1) — it rides on every call.`
       : ` No onboarding brief: they start cold. Write one with brief_update({name:"${name}", briefing}).`;
     const watchNote = watch === true ? ' Watching: they review each of your turns at Stop.' : '';
+    // Advisory, after the fact: the hire is already recorded, because whether
+    // two models fit on one GPU is a scheduling problem, not a hiring one.
+    const warning = isLocalModel(model) ? await contentionFor(model) : null;
+    const fallbackNote = isLocalModel(model)
+      ? fallback_model
+        ? ` If ${model.split('/')[1]} is down they fall back to ${fallback_model}.`
+        : ` No fallback_model: if their local server is down, calls report that rather than going remote.`
+      : '';
     return {
       ok: true, name, model, root, briefing: brief, watch: watch === true,
+      local: isLocalModel(model), contention_warning: warning || null,
       text: `Recruited @${name} on ${model}${fb}${priceNote}. Address them with @${name} or ask({name:"${name}", ...}).` +
-            `${briefNote}${watchNote}`
+            `${briefNote}${watchNote}${fallbackNote}${warning ? `\n\n${warning}` : ''}`
     };
   }
 
@@ -341,9 +416,26 @@ export function createRoom({
   // Pass `role` (and optionally `volume`) to get the hiring view: the same rows,
   // rendered first as 2-3 offer cards with a monthly cost projection, so the
   // user picks a price rather than a leaderboard position.
-  async function audition({ candidates, role_prompt, probe, role, volume, host: askHost = host } = {}) {
+  async function audition({
+    candidates, role_prompt, probe, role, volume,
+    include_local = false, local_only = false, host: askHost = host
+  } = {}) {
+    const wantsLocal = include_local || local_only;
+    let discovery = null;
+    let given = Array.isArray(candidates) ? candidates : [];
+    if (local_only) given = given.filter((c) => isLocalModel(c?.model));
+    if (wantsLocal) {
+      discovery = await localModels();
+      const already = new Set(given.map((c) => c?.model));
+      candidates = [...given, ...localCandidates(discovery.models).filter((c) => !already.has(c.model))];
+    } else {
+      candidates = given;
+    }
+
     if (!Array.isArray(candidates) || !candidates.length) {
-      return fail('audition needs candidates: [{model, fallback_model?}]');
+      return fail(wantsLocal
+        ? `No candidates. ${discovery?.text || 'No local models found.'}`
+        : 'audition needs candidates: [{model, fallback_model?}]');
     }
     if (candidates.some((c) => !c || typeof c.model !== 'string' || !c.model.trim())) {
       return fail('every candidate needs a model id');
@@ -358,8 +450,9 @@ export function createRoom({
     if (prov().name !== 'mock') {
       loaded = await models();
       if (loaded) {
+        // Local ids are not in the OpenRouter catalog and never will be.
         const unknown = [...new Set(candidates.flatMap((c) => [c.model, c.fallback_model]).filter(Boolean))]
-          .filter((m) => !loaded.models[m]);
+          .filter((m) => !isLocalModel(m) && !loaded.models[m]);
         if (unknown.length) {
           return fail(`unknown OpenRouter model(s): ${unknown.join(', ')} (catalog from ${loaded.source})`);
         }
@@ -369,7 +462,11 @@ export function createRoom({
     const res = await runAudition({
       candidates, role_prompt, probe,
       provider: prov(),
-      priceFor: priceFor || ((m) => priceOf(loaded?.models, m)),
+      // Local models are priced at zero, not unpriced: the row then flows
+      // through the same ledger and cost arithmetic as a paid one.
+      priceFor: (m) => (isLocalModel(m)
+        ? { prompt: 0, completion: 0 }
+        : (priceFor ? priceFor(m) : priceOf(loaded?.models, m))),
       retryDelayMs
     });
 
@@ -385,11 +482,23 @@ export function createRoom({
       });
     }
 
-    if (!role) return res;
+    // Discovery is evidence too: which hosts answered, and what to run if one
+    // did not, belongs in the transcript rather than in a swallowed exception.
+    const localText = discovery ? `${discovery.text}\n\n` : '';
+    const localWarning = res.rows.some((r) => r.local) ? await contentionFor(null) : null;
+
+    if (!role) {
+      return {
+        ...res,
+        local_hosts: discovery?.hosts || null,
+        contention_warning: localWarning,
+        text: `${localText}${res.text}${localWarning ? `\n\n${localWarning}` : ''}`
+      };
+    }
 
     // Hiring view: offers first, the audition evidence underneath. The rows are
     // kept verbatim so the chair can still show its working when asked.
-    const offered = makeOffers({ auditionRows: res.rows, role, volume });
+    const offered = makeOffers({ auditionRows: res.rows, role, volume, local_warning: localWarning });
     store.appendEvent({
       host: askHost, author: 'chair', role: 'user',
       text: `offers for role "${role}": ${offered.offers.map((o) => o.model).join(', ') || 'none'}`
@@ -402,7 +511,9 @@ export function createRoom({
       handle: offered.handle,
       recommended: offered.recommended,
       offers_text: offered.text,
-      text: `${offered.text}\n\n${res.text}`
+      local_hosts: discovery?.hosts || null,
+      contention_warning: localWarning,
+      text: `${localText}${offered.text}\n\n${res.text}`
     };
   }
 
@@ -410,13 +521,27 @@ export function createRoom({
   // Audition remains the fast one-probe path. A role pack is the evidence path:
   // multiple realistic cases, repeated trials, explicit fatal criteria, and a
   // reproducible pack version. It still hires nobody.
-  async function evaluateRole({ role_pack, candidates, trials, max_parallel = 4, offers = true, host: askHost = host } = {}) {
+  async function evaluateRole({
+    role_pack, candidates, trials, max_parallel = 4, offers = true,
+    include_local = false, local_only = false, host: askHost = host
+  } = {}) {
     try {
       if (typeof role_pack !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(role_pack)) {
         return fail('evaluate_role needs a role_pack id such as "sdr-outbound"');
       }
+      const wantsLocal = include_local || local_only;
+      let discovery = null;
+      if (wantsLocal) {
+        let given = Array.isArray(candidates) ? candidates : [];
+        if (local_only) given = given.filter((c) => isLocalModel(c?.model));
+        discovery = await localModels();
+        const already = new Set(given.map((c) => c?.model));
+        candidates = [...given, ...localCandidates(discovery.models).filter((c) => !already.has(c.model))];
+      }
       if (!Array.isArray(candidates) || !candidates.length) {
-        return fail('evaluate_role needs candidates: [{model, fallback_model?}]');
+        return fail(wantsLocal
+          ? `No candidates. ${discovery?.text || 'No local models found.'}`
+          : 'evaluate_role needs candidates: [{model, fallback_model?}]');
       }
       const capped = overBudget();
       if (capped) return capped;
@@ -427,9 +552,10 @@ export function createRoom({
         loaded = await models();
         if (loaded) {
           const unknown = [...new Set(candidates.flatMap((c) => [c?.model, c?.fallback_model]).filter(Boolean))]
-            .filter((m) => !loaded.models[m]);
+            .filter((m) => !isLocalModel(m) && !loaded.models[m]);
           if (unknown.length) return fail(`unknown OpenRouter model(s): ${unknown.join(', ')} (catalog from ${loaded.source})`);
           const tooSmall = candidates.filter((c) => {
+            if (isLocalModel(c.model)) return false; // context comes from the host, not the catalog
             const have = Number(loaded.models[c.model]?.context_length || 0);
             return have > 0 && have < Number(pack.candidate_requirements?.min_context_tokens || 0);
           });
@@ -442,7 +568,7 @@ export function createRoom({
 
       const priced = candidates.map((c) => ({
         ...c,
-        price: c.price || priceOf(loaded?.models, c.model)
+        price: c.price || (isLocalModel(c.model) ? { prompt: 0, completion: 0 } : priceOf(loaded?.models, c.model))
       }));
       // Role packs can fan out dozens of trials. Reserve estimated capacity
       // before each call, then settle actual cost before waking queued trials.
@@ -515,15 +641,29 @@ export function createRoom({
         ...result.rows.map((r) =>
           `#${r.rank} ${r.model} · score ${(r.score * 100).toFixed(1)} · pass ${(r.pass_rate * 100).toFixed(0)}% · ` +
           `consistency ${(r.consistency * 100).toFixed(0)}% · ${r.eligible ? 'eligible' : r.fatal_failure ? 'fatal failure' : r.pending_manual ? 'manual review' : 'not eligible'} · ` +
-          `${(r.latency_ms / 1000).toFixed(1)}s avg · eval cost ${fmtCost(r.cost)}`
+          `${(r.latency_ms / 1000).toFixed(1)}s avg · ` +
+          `${r.tokens_per_sec ? `${r.tokens_per_sec} tok/s · ` : ''}` +
+          `eval cost ${isLocalModel(r.model) ? '$0 (local)' : fmtCost(r.cost)}`
         ),
         '',
         'No candidate was hired. Raw case/trial evidence is available in the structured result.'
       ].join('\n');
 
-      if (!offers) return { ...result, pack, text: evidenceText };
+      const localText = discovery ? `${discovery.text}\n\n` : '';
+      const localWarning = result.rows.some((r) => isLocalModel(r.model)) ? await contentionFor(null) : null;
+
+      if (!offers) {
+        return {
+          ...result, pack,
+          local_hosts: discovery?.hosts || null,
+          contention_warning: localWarning,
+          text: `${localText}${evidenceText}${localWarning ? `\n\n${localWarning}` : ''}`
+        };
+      }
       const offerRows = result.rows.map((r) => ({
         ...r,
+        local: isLocalModel(r.model),
+        host: parseLocalModel(r.model)?.host || null,
         verdict: r.eligible ? 'role-pass' : r.fatal_failure ? 'fatal-fail' : r.pending_manual ? 'manual-review' : 'role-fail',
         // Offers are admission decisions, not merely a prettier leaderboard.
         // Keep failed candidates in the evidence table, but never turn a fatal,
@@ -540,7 +680,8 @@ export function createRoom({
         rows: offerRows,
         role: pack.name,
         volume: pack.default_volume,
-        handle: pack.id
+        handle: pack.id,
+        local_warning: localWarning
       });
       return {
         ...result,
@@ -549,7 +690,9 @@ export function createRoom({
         recommended: offered.recommended,
         volume: offered.volume,
         offers_text: offered.text,
-        text: `${offered.text}\n\n${evidenceText}`
+        local_hosts: discovery?.hosts || null,
+        contention_warning: localWarning,
+        text: `${localText}${offered.text}\n\n${evidenceText}`
       };
     } catch (error) {
       return fail(String(error?.message || error));
@@ -934,7 +1077,7 @@ export function createRoom({
   };
 
   return {
-    recruit, ask, discuss, audition, evaluateRole, roster, dismiss, events,
+    recruit, ask, discuss, audition, evaluateRole, localModels, roster, dismiss, events,
     showPersona, updatePersona, rollbackPersona,
     briefUpdate, showBriefing,
     pin, unpin, pins: pinsList,

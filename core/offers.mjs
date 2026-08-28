@@ -18,6 +18,7 @@
 //   3. Nobody is hired here either. makeOffers returns cards; the chair asks
 //      the user to pick one, and only then calls recruit().
 import { NAME_RE } from './state.mjs';
+import { isLocalModel, parseLocalModel } from './local-models.mjs';
 
 export const DAYS_PER_MONTH = 30;
 export const MAX_OFFERS = 3;
@@ -170,7 +171,7 @@ function suggestFallback(row, rows) {
   return (after || live[0]).model;
 }
 
-export function makeOffers({ auditionRows, rows, role, volume, handle, max = MAX_OFFERS } = {}) {
+export function makeOffers({ auditionRows, rows, role, volume, handle, local_warning, max = MAX_OFFERS } = {}) {
   const all = auditionRows || rows || [];
   const vol = resolveVolume(volume);
   const baseHandle = handle && NAME_RE.test(handle) ? handle : handleFromRole(role);
@@ -188,18 +189,25 @@ export function makeOffers({ auditionRows, rows, role, volume, handle, max = MAX
 
   let offers = chosen.map((r, i) => {
     const cost = projectCost(r.price, vol);
+    const local = isLocalModel(r.model);
     return {
       n: i + 1,
       handle: baseHandle,
       model: r.model,
+      // A local card is priced at zero for a different reason than a free
+      // remote one: there is no tier to be rate limited off, only a server that
+      // may or may not be running. Rendering keeps the two apart.
+      local,
+      host: local ? (r.host || parseLocalModel(r.model)?.host || null) : null,
+      tokens_per_sec: Number.isFinite(r.tokens_per_sec) ? r.tokens_per_sec : null,
       fallback_model: suggestFallback(r, all),
       trap_verdict: r.verdict || r.trap_verdict || (r.trap_honest ? 'honest' : 'evasive'),
       eligible: typeof r.eligible === 'boolean' ? r.eligible : null,
       latency_ms: r.latency_ms ?? null,
       score: typeof r.score === 'number' ? r.score : null,
       audition_rank: r.rank ?? null,
-      tier: tierOf(cost),
-      free: cost.free,
+      tier: local ? 'local' : tierOf(cost),
+      free: local || cost.free,
       price: r.price || null,
       cost,
       premium: false,
@@ -235,7 +243,8 @@ export function makeOffers({ auditionRows, rows, role, volume, handle, max = MAX
     role: role || null,
     handle: baseHandle,
     recommended: rec.model,
-    text: formatOffers({ offers, volume: vol, role, handle: baseHandle })
+    local_warning: local_warning || null,
+    text: formatOffers({ offers, volume: vol, role, handle: baseHandle, local_warning })
   };
 }
 
@@ -254,20 +263,37 @@ export function fmtMonthly(cost) {
 
 const fmtTokens = (n) => (n >= 1000 ? `${n / 1000}k` : String(n));
 
+export const fmtRate = (n) =>
+  (typeof n === 'number' && Number.isFinite(n) && n > 0 ? `${n} tok/s` : 'tok/s n/a');
+
+// A local card carries the two facts a remote card cannot answer for it: which
+// server on this machine will serve it, and how fast it actually decoded during
+// its own audition. The monthly projection is replaced outright — "$0.00/mo
+// (free tier — rate limits apply)" would be a lie about a model on your desk.
 export function offerLine(o) {
-  const parts = [
-    `#${o.n} ${o.handle}`,
-    o.model,
-    o.trap_verdict,
-    fmtMonthly(o.cost),
-    fmtLatency(o.latency_ms)
-  ];
+  const parts = o.local
+    ? [
+        `#${o.n} ${o.handle}`,
+        o.model,
+        `host ${o.host || 'local'}`,
+        o.trap_verdict,
+        '$0 (local)',
+        fmtRate(o.tokens_per_sec),
+        fmtLatency(o.latency_ms)
+      ]
+    : [
+        `#${o.n} ${o.handle}`,
+        o.model,
+        o.trap_verdict,
+        fmtMonthly(o.cost),
+        fmtLatency(o.latency_ms)
+      ];
   if (o.premium) parts.push('premium');
   if (o.recommended) parts.push('recommended');
   return parts.join(' · ');
 }
 
-export function formatOffers({ offers, volume, role, handle }) {
+export function formatOffers({ offers, volume, role, handle, local_warning }) {
   const vol = volume;
   const head =
     `Offers for "${role || handle}" — volume ${vol.profile} ` +
@@ -282,6 +308,7 @@ export function formatOffers({ offers, volume, role, handle }) {
     ...lines,
     '',
     `fallbacks — ${fallbacks}`,
+    ...(local_warning ? ['', local_warning] : []),
     'Nobody is hired yet. Pick a number and I will recruit them on that model.'
   ].join('\n');
 }

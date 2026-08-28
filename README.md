@@ -1,7 +1,8 @@
 # persona-recruiter
 
 A Slack-like room for your agent sessions: recruit named personas backed by
-OpenRouter models, then address them mid-conversation with `@name`. The host's
+OpenRouter models — or by models running on your own machine — then address them
+mid-conversation with `@name`. The host's
 agent stays the chair; recruits are reachable only through explicit room tools.
 The same surface covers conversation (`ask`, `discuss`), evidence-based hiring
 (`audition`, `evaluate_role`), durable work (`assign_task`, `tasks`, approvals),
@@ -29,10 +30,11 @@ history and one spend cap.
      codex        ~/.codex/sessions/**/rollout-*.jsonl                  │
      event-log    <state>/events.jsonl  ← room's own channel     ┌──────▼──────┐
                                                                  │   ~/.room   │
-                                                                 │  recruits/  │
-                                                                 │  events.jsonl│
-                                                                 │  spend.json │
-                                                                 │  execution/ │
+   model hosts (provider routes on the id)                       │  recruits/  │
+     openrouter   https://openrouter.ai/api/v1   paid            │  events.jsonl│
+     ollama       127.0.0.1:11434  /api/tags     $0, local       │  spend.json │
+     llama-server 127.0.0.1:8080   /v1/models    $0, local       │  execution/ │
+                                                                 │  config.json │
                                                                  └─────────────┘
 ```
 
@@ -222,6 +224,102 @@ against free), so it never lands on $0.38-vs-$0.36.
 `recommended` is the best-ranked card that was **honest** on the trap, not
 simply rank 1. It is a suggestion; the user picks.
 
+## Local models
+
+Models running on your own machine are candidates like any other. They are
+discovered, auditioned, ranked, offered and hired by the same code as an
+OpenRouter model — the only differences are the namespace and the price.
+
+Two hosts are built in, both OpenAI-compatible and neither needing an API key:
+
+| Host           | Default endpoint         | Catalogue     | Resident check | Start it with |
+|----------------|--------------------------|---------------|----------------|---------------|
+| `ollama`       | `http://127.0.0.1:11434` | `/api/tags`   | `/api/ps`      | `ollama serve` |
+| `llama-server` | `http://127.0.0.1:8080`  | `/v1/models`  | up == loaded   | your llama.cpp start script |
+
+Model ids are namespaced `local/<host>/<model>`, so an id is self-describing
+everywhere it travels — persona files, the spend ledger, offer cards, the
+transcript:
+
+```
+local/ollama/qwen3.6:35b-a3b
+local/llama-server/qwen3.6-35b-a3b
+```
+
+Override the endpoints with `ROOM_OLLAMA_URL` / `ROOM_LLAMA_SERVER_URL`, or in
+`<state>/config.json`, which can also add hosts of your own (any OpenAI-compatible
+server; `/v1/models` and `/v1/chat/completions` are all that is required):
+
+```json
+{ "local_hosts": { "gpu-box": { "base_url": "http://10.0.0.9:9000", "start_command": "ssh gpu-box start" } } }
+```
+
+### Auditioning them
+
+```js
+await room.audition({ local_only: true, role_prompt: '...', role: 'local coder' });
+await room.audition({ candidates: [{ model: 'openai/gpt-4o-mini' }], include_local: true, role_prompt: '...' });
+```
+
+`include_local` adds the discovered field to the candidates you named;
+`local_only` drops everything else. Embedding-only models are never put in front
+of a role. The MCP tools `audition` and `evaluate_role` take the same two flags,
+and `local_models` reports the hosts without probing anything.
+
+The offer line for a local card names its host and the throughput it actually
+measured, and is priced `$0 (local)` rather than as a rate-limited free tier —
+because a model on your desk is free, not merely unbilled:
+
+```
+#1 local-coder · local/ollama/gemma4:e4b · host ollama · honest · $0 (local) · 54 tok/s · 14.8s · recommended
+```
+
+Ranking is unchanged except that the 0.10 speed weight now splits into wall-clock
+latency and **measured decode rate** (completion tokens over the wall clock of the
+probe). The two disagree often enough to matter: a local model that streams 80
+tok/s can still lose on latency by writing a longer answer. A candidate that
+reports no usage has no rate, so its throughput score defers to its latency
+score and the arithmetic is exactly what it was before.
+
+### When the server is down
+
+Not running is the ordinary state of a local host, not an error. Discovery says
+so and names the command that would fix it:
+
+```
+Local model hosts:
+  ollama — up at http://127.0.0.1:11434, 4 model(s)
+  llama-server — not running at http://127.0.0.1:8080 (not running). Start it with: ~/…/agentic/start.sh
+```
+
+You may hire against a host that is not running yet — the recruit persists in the
+roster like any other and the hire text says the server is down. What happens on
+a call then depends on one thing only: a local recruit hired **with** a
+`fallback_model` falls back to it, and one hired without reports the server-down
+message rather than silently spending money remotely.
+
+### GPU contention
+
+Only one big model runs well at a time on a single GPU; measured here, decode
+collapses from ~80 tok/s to ~2.4 tok/s under contention. Before a local probe or
+hire the room asks each host what it currently holds and, if a second heavyweight
+would contend, attaches a warning to the offer or the hire:
+
+```
+GPU contention: llama-server/qwen3.6-35b-a3b already resident. Running ollama/gemma4:e4b
+alongside will slow both … Nothing was unloaded; stop one yourself if the throughput matters.
+```
+
+It is advisory and always will be. The room never unloads, evicts or kills
+anything on your machine.
+
+### Spend
+
+A local call costs exactly `0` — as a number, not as an absent price — and it
+goes through the same ledger as a paid one. `roster()` counts the calls and
+records `$0`, so "free" is something you can audit rather than something the
+accounting quietly skips.
+
 ## Editing a recruit
 
 The prompt you wrote before you saw someone work is rarely the prompt you want
@@ -350,6 +448,7 @@ recruits/<name>/briefing.md                    ← current onboarding brief
 recruits/<name>/briefings/<n>.md               ← superseded briefs
 pins.json    ← standing room context (project overlay STACKS, not shadows)
 spend.json   models-cache.json   events.jsonl
+config.json  ← optional: { "local_hosts": { "<host>": { "base_url": … } } }
 ```
 
 Per session, in the project: `<cwd>/.room/session.json` (transcript pointer plus

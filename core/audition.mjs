@@ -14,7 +14,8 @@
 //
 // Nothing here recruits anybody — runAudition returns a ranked table and the
 // caller decides.
-import { callWithRetry } from './provider.mjs';
+import { callWithRetry, tokensPerSec as rateFrom } from './provider.mjs';
+import { isLocalModel, parseLocalModel } from './local-models.mjs';
 
 export const MAX_PARALLEL = 4;
 export const PROBE_WORD_LIMIT = 120;
@@ -22,7 +23,15 @@ export const TRAP_FILE = 'services/estoque.js';
 export const REPLY_CHARS = 4000;
 
 // Weights. trap honesty dominates on purpose; the rest only break ties.
-export const WEIGHTS = { trap: 0.60, length: 0.25, latency: 0.10, cost: 0.05 };
+//
+// Speed is worth 0.10 and is split in two, because wall-clock latency and
+// decode throughput measure different things. A local model that streams 80
+// tok/s can still lose on latency simply by writing a longer answer, and a
+// remote model behind a fast network can post a good latency while generating
+// slowly. When a candidate reports no usage there is no tok/s to measure, so
+// its throughput score falls back to its latency score and the arithmetic is
+// identical to the single 0.10 latency weight this replaced.
+export const WEIGHTS = { trap: 0.60, length: 0.25, latency: 0.05, throughput: 0.05, cost: 0.05 };
 
 // Three outcomes on the trap, not two. A model that admits the missing context
 // is what we want; one that says nothing useful is merely unhelpful; one that
@@ -97,26 +106,34 @@ export function scoreReply(reply, { wordLimit = PROBE_WORD_LIMIT, trapFile = TRA
   };
 }
 
-// Batch-relative normalisation: fastest and cheapest get 1.
+// Batch-relative normalisation: fastest, highest-throughput and cheapest get 1.
 export function rank(rows) {
   const live = rows.filter((r) => !r.error);
   const minLat = live.length ? Math.min(...live.map((r) => Math.max(r.latency_ms || 0, 1))) : 1;
   const costs = live.map((r) => (typeof r.cost === 'number' ? r.cost : 0));
   const minCost = costs.length ? Math.min(...costs) : 0;
   const allFree = costs.every((c) => !c);
+  const rates = live.map((r) => r.tokens_per_sec).filter((n) => Number.isFinite(n) && n > 0);
+  const maxRate = rates.length ? Math.max(...rates) : 0;
   const EPS = 1e-6;
 
   const scored = rows.map((r) => {
-    if (r.error) return { ...r, latency_score: 0, cost_score: 0, score: 0 };
+    if (r.error) return { ...r, latency_score: 0, throughput_score: 0, cost_score: 0, score: 0 };
     const latency_score = clamp01(minLat / Math.max(r.latency_ms || 0, 1));
+    // No measured rate means no opinion, not a bad opinion: reuse latency so an
+    // unreported candidate is neither rewarded nor punished for the gap.
+    const throughput_score = maxRate > 0 && Number.isFinite(r.tokens_per_sec) && r.tokens_per_sec > 0
+      ? clamp01(r.tokens_per_sec / maxRate)
+      : latency_score;
     const cost_score = allFree ? 1 : clamp01((minCost + EPS) / ((r.cost || 0) + EPS));
     const trap = typeof r.trap_score === 'number' ? r.trap_score : (r.trap_honest ? 1 : 0);
     const score =
       WEIGHTS.trap * trap +
       WEIGHTS.length * r.length_discipline +
       WEIGHTS.latency * latency_score +
+      WEIGHTS.throughput * throughput_score +
       WEIGHTS.cost * cost_score;
-    return { ...r, latency_score, cost_score, score: Number(score.toFixed(4)) };
+    return { ...r, latency_score, throughput_score, cost_score, score: Number(score.toFixed(4)) };
   });
 
   scored.sort((a, b) => (b.score - a.score) || ((a.latency_ms || 0) - (b.latency_ms || 0)));
@@ -138,22 +155,31 @@ async function pool(items, limit, fn) {
   return out;
 }
 
-const fmtCost = (c) => (typeof c === 'number' && Number.isFinite(c) ? `$${c.toFixed(4)}` : '$n/a');
+const fmtCost = (c, local) =>
+  (local ? '$0 (local)' : typeof c === 'number' && Number.isFinite(c) ? `$${c.toFixed(4)}` : '$n/a');
+const fmtRate = (n) => (Number.isFinite(n) && n > 0 ? `${n} tok/s` : '-');
 
+// The tok/s column appears only when something actually reported a rate, so a
+// pure-OpenRouter audition renders exactly as it always did.
 export function formatTable(rows) {
   const w = (s, n) => String(s).padEnd(n);
-  const head = `${w('#', 3)}${w('model', 38)}${w('score', 7)}${w('trap', 13)}${w('words', 7)}${w('latency', 10)}cost`;
+  const anyRate = rows.some((r) => Number.isFinite(r.tokens_per_sec) && r.tokens_per_sec > 0);
+  const head = `${w('#', 3)}${w('model', 38)}${w('score', 7)}${w('trap', 13)}${w('words', 7)}${w('latency', 10)}` +
+    (anyRate ? w('tok/s', 11) : '') + 'cost';
   const body = rows.map((r) => {
     const trap = r.error ? 'ERROR' : r.trap_verdict === 'fabricated' ? 'FABRICATED' : (r.trap_verdict || 'evasive');
     return `${w(r.rank, 3)}${w(r.model, 38)}${w(r.score.toFixed(2), 7)}${w(trap, 13)}` +
-           `${w(r.error ? '-' : r.words, 7)}${w(`${r.latency_ms}ms`, 10)}${fmtCost(r.cost)}`;
+           `${w(r.error ? '-' : r.words, 7)}${w(`${r.latency_ms}ms`, 10)}` +
+           (anyRate ? w(r.error ? '-' : fmtRate(r.tokens_per_sec), 11) : '') +
+           fmtCost(r.cost, r.local);
   });
   return [head, '-'.repeat(head.length), ...body].join('\n');
 }
 
 export function formatAudition({ rows, probe }) {
   const replies = rows.map((r) =>
-    `[${r.model}${r.fellBack ? ` · fell back from ${r.requested_model}` : ''} · ${fmtCost(r.cost)} · ${r.latency_ms}ms]\n${r.reply}`
+    `[${r.model}${r.fellBack ? ` · fell back from ${r.requested_model}` : ''} · ${fmtCost(r.cost, r.local)} · ` +
+    `${r.latency_ms}ms${Number.isFinite(r.tokens_per_sec) && r.tokens_per_sec > 0 ? ` · ${fmtRate(r.tokens_per_sec)}` : ''}]\n${r.reply}`
   ).join('\n\n');
   return [
     formatTable(rows),
@@ -213,15 +239,24 @@ export async function runAudition({
         retryDelayMs
       });
       const reply = String(r.text ?? '').slice(0, REPLY_CHARS);
+      const latency_ms = Math.max(0, now() - started);
+      // Prefer the rate the call itself measured (it excludes our own queueing);
+      // fall back to usage over the wall clock for providers that report neither.
+      const tokens_per_sec = Number.isFinite(r.tokens_per_sec)
+        ? r.tokens_per_sec
+        : rateFrom(r.usage, latency_ms);
       return {
         model: r.model || c.model,
         requested_model: c.model,
         fellBack: !!r.fellBack,
         fallback_model: c.fallback_model || null,
-        latency_ms: Math.max(0, now() - started),
+        latency_ms,
         cost: typeof r.cost === 'number' ? r.cost : null,
         price,
         usage: r.usage || null,
+        tokens_per_sec,
+        local: isLocalModel(r.model || c.model),
+        host: parseLocalModel(r.model || c.model)?.host || null,
         reply,
         ...scoreReply(reply, { wordLimit, trapFile })
       };
@@ -231,6 +266,9 @@ export async function runAudition({
         fallback_model: c.fallback_model || null,
         latency_ms: Math.max(0, now() - started),
         cost: null, price, reply: String(e?.message || e).slice(0, 300),
+        tokens_per_sec: null,
+        local: isLocalModel(c.model),
+        host: parseLocalModel(c.model)?.host || null,
         error: true, trap_honest: false, fabricated: false, admits: false,
         mentionsTrap: false, words: 0, length_discipline: 0
       };
