@@ -51,8 +51,12 @@ export const historyPathIn = (root, n) => path.join(root, 'recruits', n, 'histor
 export const briefingPathIn = (root, n) => path.join(root, 'recruits', n, 'briefing.md');
 export const briefingsDirIn = (root, n) => path.join(root, 'recruits', n, 'briefings');
 export const briefingRevPathIn = (root, n, rev) => path.join(root, 'recruits', n, 'briefings', `${rev}.md`);
+export const compactionPathIn = (root, n) => path.join(root, 'recruits', n, 'compaction.json');
 export const pinsPathOf = (root) => path.join(root, 'pins.json');
 export const spendPathOf = (root) => path.join(root, 'spend.json');
+// Attribution: one line per settled provider call, {ts, who, why, cost}. The
+// totals in spend.json say how much is left; this says where it went.
+export const spendLogPathOf = (root) => path.join(root, 'spend-log.jsonl');
 export const modelsCachePathOf = (root) => path.join(root, 'models-cache.json');
 export const eventsPathOf = (root) => path.join(root, 'events.jsonl');
 
@@ -259,6 +263,37 @@ export function createStore({ stateDir = DEFAULT_STATE_DIR, projectDir = process
     return s;
   }
 
+  function appendSpendEntry(entry) {
+    const p = spendLogPathOf(stateDir);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, JSON.stringify(entry) + '\n');
+    return p;
+  }
+
+  function readSpendLog(n = 0) {
+    try {
+      const lines = fs.readFileSync(spendLogPathOf(stateDir), 'utf8').split('\n').filter(Boolean);
+      const wanted = n > 0 ? lines.slice(-n) : lines;
+      return wanted.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    } catch { return []; }
+  }
+
+  // --- brief compaction pointer ----------------------------------------------
+  // How much of the channel a recruit's brief has already absorbed. Stored as an
+  // event-count watermark rather than a timestamp: events.jsonl is append-only,
+  // so "how many events have happened since" is a subtraction, not a scan.
+  function readCompaction(name) {
+    const root = rootFor(name);
+    if (!root) return null;
+    return rd(compactionPathIn(root, name), null);
+  }
+
+  function writeCompaction(name, entry) {
+    const root = rootFor(name) || stateDir;
+    wr(compactionPathIn(root, name), entry);
+    return root;
+  }
+
   function archive(name) {
     const root = rootFor(name);
     if (!root) return null;
@@ -276,12 +311,20 @@ export function createStore({ stateDir = DEFAULT_STATE_DIR, projectDir = process
     fs.appendFileSync(p, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n');
   }
 
-  function tailEvents(n = 50) {
-    try {
-      const lines = fs.readFileSync(eventsPathOf(stateDir), 'utf8').split('\n').filter(Boolean);
-      return lines.slice(-n).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-    } catch { return []; }
+  function allEventLines() {
+    try { return fs.readFileSync(eventsPathOf(stateDir), 'utf8').split('\n').filter(Boolean); }
+    catch { return []; }
   }
+
+  const parseLines = (lines) =>
+    lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+
+  function tailEvents(n = 50) {
+    return parseLines(allEventLines().slice(-n));
+  }
+
+  const eventCount = () => allEventLines().length;
+  const eventsFrom = (index = 0) => parseLines(allEventLines().slice(Math.max(0, index)));
 
   return {
     stateDir, projectDir, overlay, hasOverlay, roots, rootFor,
@@ -292,7 +335,9 @@ export function createStore({ stateDir = DEFAULT_STATE_DIR, projectDir = process
     pinRoots, pinRootFor, readPins, readPinsIn, writePinsIn,
     readHistory, appendHistory,
     readSpend, addSpend, archive,
-    appendEvent, tailEvents,
+    appendSpendEntry, readSpendLog, spendLogPath: () => spendLogPathOf(stateDir),
+    readCompaction, writeCompaction,
+    appendEvent, tailEvents, eventCount, eventsFrom,
     modelsCachePath: () => modelsCachePathOf(stateDir),
     ensure: () => fs.mkdirSync(recruitsDirOf(stateDir), { recursive: true })
   };

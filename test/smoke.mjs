@@ -82,11 +82,11 @@ check(fs.readFileSync(SERVER, 'utf8').includes("new McpServer({ name: 'teambrrr'
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
 check(JSON.stringify(tools) === JSON.stringify([
-  'ask', 'assign_task', 'audition', 'brief_update', 'discuss', 'dismiss',
+  'ask', 'assign_task', 'audition', 'brief_compact', 'brief_update', 'discuss', 'dismiss',
   'evaluate_role', 'export_hermes', 'local_models', 'pin', 'pins', 'recruit',
-  'rollback_persona', 'roster', 'show_persona', 'task_cancel', 'task_decide',
+  'rollback_persona', 'roster', 'show_persona', 'spend', 'task_cancel', 'task_decide',
   'tasks', 'unpin', 'update_persona'
-]), 'twenty tools registered', tools.join(','));
+]), 'twenty-two tools registered', tools.join(','));
 
 // recruit x2
 const r1 = await call('recruit', { name: 'alpha', model: 'openai/gpt-4o-mini', system_prompt: 'You are a blunt systems engineer.', tags: ['systems'] });
@@ -232,6 +232,33 @@ check(ros2.text.includes('calls:5'), 'roster counts calls (3 asks + 2 discuss ro
   check(overBudget.isError && /pin refused/.test(overBudget.text), 'the pin budget is enforced over MCP', overBudget.text.slice(0, 120));
   const unpinned = await call('unpin', { id: pinId });
   check(!unpinned.isError && (await call('pins')).text.includes('No pins'), 'unpin over MCP', unpinned.text);
+
+  // spend: the attribution the budget has been keeping all along
+  const spend = await call('spend');
+  check(!spend.isError && /of \$.* cap/.test(spend.text) && /calls this session/.test(spend.text),
+    'spend reports both ceilings over MCP', spend.text.split('\n')[0]);
+  check(/alpha · \d+ call/.test(spend.text), 'and breaks the calls down per recruit', spend.text);
+
+  // brief_compact: material for the chair, and no model call of its own
+  const compact = await call('brief_compact', { name: 'gamma' });
+  check(!compact.isError && compact.text.includes('=== CURRENT BRIEF'),
+    'brief_compact hands back the current brief over MCP', compact.text.slice(0, 120));
+  check(compact.text.includes('brief_update({name: "gamma"'), 'and names the tool that finishes the job');
+  const spendAfter = await call('spend');
+  check(spendAfter.text.split('\n')[0] === spend.text.split('\n')[0], 'and spends nothing doing it',
+    spendAfter.text.split('\n')[0]);
+
+  const autonomous = await call('recruit', {
+    name: 'delta', model: 'openai/gpt-4o-mini', system_prompt: 'You act.', autonomy: 'L2',
+    authoring_rating: { role_fit: 9, specificity: 9, refusal_clarity: 9, format_clarity: 9 }
+  });
+  check(!autonomous.isError && /Autonomy L2 impactful, rollbackable/.test(autonomous.text),
+    'autonomy is settable at hire time over MCP', autonomous.text);
+  check(JSON.parse(fs.readFileSync(statePersona('delta'), 'utf8')).autonomy === 'L2', 'and stored on the persona');
+  check(/self-rating 9\/10/.test(autonomous.text), 'so is the authoring self-rating', autonomous.text);
+  check((await call('roster')).text.includes('@delta · openai/gpt-4o-mini · L2'), 'the roster shows the rung');
+  check((await call('recruit', { name: 'eps', model: 'openai/gpt-4o-mini', system_prompt: 'x', autonomy: 'L9' })).isError,
+    'and an unknown rung is refused by the schema');
 
   const watched = await call('update_persona', { name: 'gamma', watch: true });
   check(!watched.isError && JSON.parse(fs.readFileSync(statePersona('gamma'), 'utf8')).watch === true,

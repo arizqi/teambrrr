@@ -10,7 +10,8 @@ const FILES = [
   'audition.mjs', 'offers.mjs', 'persona.mjs', 'context.mjs',
   'hooks.mjs', 'hermes.mjs', 'slack.mjs',
   'claude-setup.mjs',
-  'execution.mjs', 'role-packs.mjs', 'room-extensions.mjs', 'local-models.mjs'
+  'execution.mjs', 'role-packs.mjs', 'room-extensions.mjs', 'local-models.mjs',
+  'budget.mjs', 'recruiting.mjs'
 ];
 
 let checks = 0;
