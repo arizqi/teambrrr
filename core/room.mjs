@@ -17,6 +17,9 @@ import {
 import { createAutoSource } from './digest/auto.mjs';
 import { MAX_DIGEST_CHARS, NO_DIGEST } from './digest/util.mjs';
 import { runAudition } from './audition.mjs';
+import { createCallBudget, estimateCallCost, isBudgetExhausted, maxCallsFromEnv } from './budget.mjs';
+import { autonomyOf, describeAutonomy, normalizeAutonomy, AUTONOMY_MENU, DEFAULT_AUTONOMY } from './autonomy.mjs';
+import { DEFAULT_JUDGE_MODELS } from './judges.mjs';
 import { makeOffers } from './offers.mjs';
 import { createExecutionBridge } from './execution.mjs';
 import { evaluateRolePack, loadRolePack } from './role-packs.mjs';
@@ -43,9 +46,22 @@ const SOLO_RULE =
 //                       the chair knows and the recruit cannot see. Versioned.
 //   PINNED ROOM CONTEXT — standing decisions, added as they are taken, budgeted
 //                       so the block can never grow into a second system prompt.
-export const BRIEF_HEADER = 'ONBOARDING BRIEF (authored by the chair at hire time):';
-export const PINS_HEADER = 'PINNED ROOM CONTEXT:';
+//
+// Each of those is a NAMED, FENCED block. The names are not decoration: a model
+// reading four undifferentiated system messages has to infer which one wins
+// when they disagree, and it usually infers "the most recent", which is the
+// transcript — the least authoritative thing in the stack. So the pin block
+// says outright that it takes precedence, and the transcript block says
+// outright that it is background. Focused items first, ambient context last.
+export const BRIEF_HEADER = '=== ONBOARDING BRIEF ===';
+export const PINS_HEADER = '=== PINNED (PRIORITY — these decisions take precedence) ===';
+export const TRANSCRIPT_HEADER = '=== CHANNEL TRANSCRIPT (background) ===';
 export const PIN_BUDGET_CHARS = 2000;
+export const BRIEF_COMPACT_WORDS = 800;
+// How many channel events may pass before a brief is worth recompacting. Well
+// under the point where the brief is wrong, and well over the point where
+// recompacting is just churn.
+export const BRIEF_STALE_EVENTS = 50;
 
 const HISTORY_TURNS = 10;
 const ERR_CHARS = 300;
@@ -69,6 +85,9 @@ export function createRoom({
   provider,
   host = process.env.ROOM_HOST || 'unknown',
   budget = Number(process.env.PERSONA_RECRUITER_BUDGET_USD || '1.00'),
+  maxCalls = maxCallsFromEnv(),
+  judgeProvider,
+  judgeModels = DEFAULT_JUDGE_MODELS,
   priceFor,
   executionBridge,
   localDiscovery,
@@ -91,6 +110,67 @@ export function createRoom({
 
   const models = ({ allowFetch = true } = {}) =>
     loadModels(store.modelsCachePath(), { allowFetch });
+
+  // --- the budget ------------------------------------------------------------
+  // ONE instance for this room process. Every provider call site takes a ticket
+  // from it before calling, which is what makes a parallel fan-out land inside
+  // the cap instead of one batch past it. The dollar side reads the persisted
+  // ledger so the cap survives a restart; the call side is per process, because
+  // "how many calls has this session made" is the question a runaway loop
+  // makes you want to ask.
+  const callBudget = createCallBudget({
+    maxUsd: budget,
+    maxCalls,
+    spent: () => Number(store.readSpend().total || 0),
+    record: (entry) => store.appendSpendEntry(entry),
+    hint: `Raise PERSONA_RECRUITER_BUDGET_USD or clear ${store.stateDir}/spend.json.`
+  });
+
+  // The estimate the budget reserves before a call. A known price gives a real
+  // number; an unknown price on a provider that can actually charge gives null,
+  // which serialises that call rather than guessing. A mock provider spends
+  // nothing by construction, so it reserves nothing and stays parallel.
+  const reserveFor = ({ messages, params, price }) => {
+    if (price) return estimateCallCost({ messages, params, price });
+    return prov().name === 'mock' ? 0 : null;
+  };
+
+  // Wrap a provider so every call it makes is ticketed and attributed. Retries
+  // inside callWithRetry come back through here, so a model that fails twice
+  // costs two calls against the ceiling — which is the truth.
+  // `onSpend` commits the real cost to the ledger BEFORE the reservation is
+  // released. The ordering is load-bearing: a queued call wakes the instant the
+  // reservation drops, and if the money it just cost has not landed in
+  // spend.json yet, that queued call reads a stale total and reserves capacity
+  // that is already gone.
+  function budgeted(base, { who, why, estimate = reserveFor, wait = false, onSpend } = {}) {
+    return {
+      ...base,
+      name: base.name,
+      call: async (req) => {
+        const label = typeof who === 'function' ? who(req) : who;
+        const ticket = await callBudget.consume(label, why, {
+          estimate: typeof estimate === 'function' ? estimate(req) : estimate,
+          wait
+        });
+        let cost = 0;
+        let failed = null;
+        let ok = false;
+        try {
+          const r = await base.call(req);
+          cost = typeof r?.cost === 'number' ? r.cost : 0;
+          ok = true;
+          return r;
+        } catch (e) {
+          failed = String(e?.message || e).slice(0, 200);
+          throw e;
+        } finally {
+          if (ok && onSpend) { try { onSpend(cost, req); } catch {} }
+          ticket.settle(cost, { model: req?.model || null, ...(failed ? { error: failed } : {}) });
+        }
+      }
+    };
+  }
 
   // --- local hosts -----------------------------------------------------------
   // Models running on this machine. Injectable so the tests never touch a
@@ -173,13 +253,69 @@ export function createRoom({
     return { ok: true, note: '' };
   }
 
+  // --- prompt authoring quality ----------------------------------------------
+  // The chair rates its own draft before it hires anybody: role fit,
+  // specificity, refusal/escalation clarity, output-format clarity. The overall
+  // is the MINIMUM, not the mean, for the same reason the audition composite is
+  // geometric — a prompt with one blank dimension is a prompt with a hole in it,
+  // and averaging hides exactly the hole you needed to see. Below 9 the skill
+  // asks for one revision pass at the weakest dimension.
+  //
+  // Stored, not enforced: the gate lives in the chair's instructions, and this
+  // is the record of whether it was actually run.
+  const RATING_DIMENSIONS = ['role_fit', 'specificity', 'refusal_clarity', 'format_clarity'];
+  const RATING_GATE = 9;
+
+  // Returns null (absent), undefined (invalid), or the normalised record.
+  function normalizeAuthoringRating(input) {
+    if (input === undefined || input === null) return null;
+    if (typeof input !== 'object' || Array.isArray(input)) return undefined;
+    const scores = {};
+    for (const d of RATING_DIMENSIONS) {
+      const n = Number(input[d]);
+      if (!Number.isFinite(n) || n < 1 || n > 10) return undefined;
+      scores[d] = n;
+    }
+    const overall = Math.min(...RATING_DIMENSIONS.map((d) => scores[d]));
+    const weakest = RATING_DIMENSIONS.reduce((a, b) => (scores[b] < scores[a] ? b : a));
+    return {
+      ...scores,
+      overall,
+      weakest,
+      revised: input.revised === true,
+      gate: RATING_GATE,
+      passes_gate: overall >= RATING_GATE,
+      ...(typeof input.notes === 'string' && input.notes.trim() ? { notes: input.notes.trim() } : {}),
+      rated_at: new Date().toISOString()
+    };
+  }
+
+  const ratingLine = (r) => (r
+    ? `authoring rating: ${r.overall}/10 overall (min of ${RATING_DIMENSIONS.map((d) => `${d} ${r[d]}`).join(', ')})` +
+      `${r.passes_gate ? '' : ` — below the ${RATING_GATE}/10 gate; weakest is ${r.weakest}`}` +
+      `${r.revised ? ' · revised once' : ''}`
+    : null);
+
   // --- recruit ---------------------------------------------------------------
-  async function recruit({ name, model, system_prompt, tags, params, fallback_model, briefing, watch }) {
+  async function recruit({
+    name, model, system_prompt, tags, params, fallback_model, briefing, watch,
+    autonomy, authoring_rating
+  }) {
     if (!NAME_RE.test(name || '')) {
       return fail(`invalid name "${name}" — must match ^[a-z0-9_-]{2,24}$`);
     }
     if (store.readPersona(name)) {
       return fail(`recruit "${name}" already exists — dismiss() first to replace`);
+    }
+
+    // Autonomy is refused rather than defaulted when it is a typo: silently
+    // filing "L4" as advise-only would be a safety decision made by a regex.
+    const level = normalizeAutonomy(autonomy);
+    if (level === undefined) return fail(`invalid autonomy "${autonomy}" — one of ${AUTONOMY_MENU}`);
+
+    const rating = normalizeAuthoringRating(authoring_rating);
+    if (rating === undefined) {
+      return fail('authoring_rating must be {role_fit, specificity, refusal_clarity, format_clarity} scored 1-10');
     }
 
     const chk = await checkModels({ model, fallback_model });
@@ -190,10 +326,12 @@ export function createRoom({
     const persona = {
       name, model, system_prompt,
       tags: tags || [], params: params || {},
+      autonomy: level || DEFAULT_AUTONOMY,
       created_at: now, updated_at: now, revision: 1
     };
     if (fallback_model) persona.fallback_model = fallback_model;
     if (watch === true) persona.watch = true;
+    if (rating) persona.authoring_rating = rating;
     const root = store.writePersona(name, persona);
 
     // The brief has to be written after the persona: writeBriefing resolves the
@@ -216,13 +354,77 @@ export function createRoom({
         ? ` If ${model.split('/')[1]} is down they fall back to ${fallback_model}.`
         : ` No fallback_model: if their local server is down, calls report that rather than going remote.`
       : '';
+    const autonomyNote = ` Autonomy ${describeAutonomy(persona.autonomy)}` +
+      (level ? '.' : ' (the default — set `autonomy` at hire time if this seat may act).');
+    const ratingNote = rating
+      ? ` Prompt self-rating ${rating.overall}/10 (lowest: ${rating.weakest}).`
+      : '';
     return {
       ok: true, name, model, root, briefing: brief, watch: watch === true,
+      autonomy: persona.autonomy, authoring_rating: rating || null,
       local: isLocalModel(model), contention_warning: warning || null,
       text: `Recruited @${name} on ${model}${fb}${priceNote}. Address them with @${name} or ask({name:"${name}", ...}).` +
-            `${briefNote}${watchNote}${fallbackNote}${warning ? `\n\n${warning}` : ''}`
+            `${briefNote}${watchNote}${autonomyNote}${ratingNote}${fallbackNote}${warning ? `\n\n${warning}` : ''}`
     };
   }
+
+  // --- warm context assembly -------------------------------------------------
+  // Each block is built independently and independently guarded. A recruit
+  // whose pin board is corrupt on disk should still get its brief; a brief that
+  // fails to read should still leave the transcript intact. Before this, one
+  // throwing read took the whole call down and the chair saw "cannot read
+  // property of null" where it expected an answer.
+  function assembleContext({ name, persona, digestText, message }) {
+    const messages = [];
+    const skipped = [];
+    const blockOrder = [
+      // 1. Who they are. Never optional.
+      ['persona', () => ({
+        role: 'system',
+        content: `${persona.system_prompt}\n\n${ROOM_RULES}\n\n${SOLO_RULE}\n\n${autonomyRuleFor(persona)}`
+      })],
+      // 2. What they were hired knowing.
+      ['briefing', () => {
+        const briefing = store.readBriefing(name);
+        if (!briefing) return null;
+        return { role: 'system', content: `${BRIEF_HEADER}\n${briefing.trim()}`, __briefing: true };
+      }],
+      // 3. Standing decisions, explicitly ranked above the transcript.
+      ['pins', () => {
+        const pinned = store.readPins();
+        if (!pinned.length) return null;
+        return { role: 'system', content: `${PINS_HEADER}\n${renderPins(pinned)}`, __pins: true };
+      }],
+      // 4. What has been happening, labelled as background.
+      ['digest', () => ({
+        role: 'system',
+        content: `${TRANSCRIPT_HEADER}\n(most recent last; the pinned block above wins where they conflict)\n${digestText}`,
+        __digest: true
+      })]
+    ];
+
+    for (const [label, build] of blockOrder) {
+      try {
+        const block = build();
+        if (block) messages.push(block);
+      } catch (e) {
+        skipped.push(`${label}: ${String(e?.message || e).slice(0, 120)}`);
+      }
+    }
+
+    // 5. Their own memory, then 6. the question.
+    try {
+      for (const h of store.readHistory(name, HISTORY_TURNS)) {
+        messages.push({ role: 'user', content: h.q });
+        messages.push({ role: 'assistant', content: h.a });
+      }
+    } catch (e) { skipped.push(`history: ${String(e?.message || e).slice(0, 120)}`); }
+    messages.push({ role: 'user', content: message });
+
+    return { messages, skipped };
+  }
+
+  const autonomyRuleFor = (persona) => `AUTONOMY ${describeAutonomy(autonomyOf(persona))}.`;
 
   // --- the shared call path (ask, discuss) -----------------------------------
   async function askOne(name, message, digestText) {
@@ -232,27 +434,13 @@ export function createRoom({
     // Order matters and is asserted by the tests: who you are, what you were
     // hired to know, what the room has standing, what just happened, what you
     // have said before, and only then the question.
-    const messages = [
-      { role: 'system', content: `${persona.system_prompt}\n\n${ROOM_RULES}\n\n${SOLO_RULE}` }
-    ];
-
-    const briefing = store.readBriefing(name);
-    if (briefing) {
-      messages.push({ role: 'system', content: `${BRIEF_HEADER}\n${briefing.trim()}`, __briefing: true });
+    const { messages, skipped } = assembleContext({ name, persona, digestText, message });
+    if (skipped.length) {
+      store.appendEvent({
+        host, author: 'chair', role: 'error',
+        text: `context block(s) skipped for @${name}: ${skipped.join('; ')}`
+      });
     }
-
-    const pinned = store.readPins();
-    if (pinned.length) {
-      messages.push({ role: 'system', content: `${PINS_HEADER}\n${renderPins(pinned)}`, __pins: true });
-    }
-
-    messages.push({ role: 'system', content: `CHANNEL TRANSCRIPT (most recent last):\n${digestText}`, __digest: true });
-
-    for (const h of store.readHistory(name, HISTORY_TURNS)) {
-      messages.push({ role: 'user', content: h.q });
-      messages.push({ role: 'assistant', content: h.a });
-    }
-    messages.push({ role: 'user', content: message });
 
     let price = null;
     if (prov().name !== 'mock') {
@@ -261,7 +449,7 @@ export function createRoom({
     }
 
     const result = await callWithRetry({
-      provider: prov(),
+      provider: budgeted(prov(), { who: name, why: 'ask' }),
       name: persona.name,
       model: persona.model,
       fallback_model: persona.fallback_model,
@@ -285,21 +473,29 @@ export function createRoom({
       store.appendEvent({ host: askHost, author: name, role: 'assistant', text: r.reply, ...extra });
       return { ...r, ...extra };
     } catch (e) {
-      const msg = String(e?.message || e).slice(0, ERR_CHARS);
+      // A ceiling reached mid-batch is reported exactly like a 429: in this
+      // recruit's own error block, naming the ceiling, without taking the rest
+      // of the fan-out down with it.
+      const msg = (budgetText(e) || String(e?.message || e)).slice(0, ERR_CHARS);
       store.appendEvent({ host: askHost, author: name, role: 'error', text: msg, ...extra });
-      return { name, model: 'error', cost: null, reply: msg, error: true, ...extra };
+      return {
+        name, model: 'error', cost: null, reply: msg, error: true,
+        ...(isBudgetExhausted(e) ? { budget_exhausted: true } : {}), ...extra
+      };
     }
   }
 
-  // Returns a fail() when the cap is spent, otherwise null.
+  // Returns a fail() when either ceiling is spent, otherwise null. This is the
+  // cheap preflight; the binding decision is made per call inside consume().
   function overBudget() {
-    const spend = store.readSpend();
-    if ((spend.total || 0) < budget) return null;
-    return fail(
-      `session spend cap reached: $${(spend.total || 0).toFixed(4)} of $${budget.toFixed(2)}. ` +
-      `Raise PERSONA_RECRUITER_BUDGET_USD or clear ${store.stateDir}/spend.json.`
-    );
+    const e = callBudget.exhausted();
+    return e ? fail(e.message) : null;
   }
+
+  // Every provider call site funnels its failures through here so a
+  // BudgetExhausted lands in the same `[name · error]` block a 429 would, with
+  // the ceiling named rather than a stack trace.
+  const budgetText = (e) => (isBudgetExhausted(e) ? `budget: ${e.message}` : null);
 
   async function buildDigest() {
     try { return await digest.build({ projectDir, maxChars: maxDigestChars }); }
@@ -417,7 +613,7 @@ export function createRoom({
   // rendered first as 2-3 offer cards with a monthly cost projection, so the
   // user picks a price rather than a leaderboard position.
   async function audition({
-    candidates, role_prompt, probe, role, volume,
+    candidates, role_prompt, probe, role, volume, judges = null, autonomy,
     include_local = false, local_only = false, host: askHost = host
   } = {}) {
     const wantsLocal = include_local || local_only;
@@ -459,14 +655,26 @@ export function createRoom({
       }
     }
 
+    // The panel is a second provider, deliberately: cheap models from other
+    // families, budgeted and attributed separately so `spend` can answer "what
+    // did the judging cost" without unpicking the probes.
+    const judgePanelProvider = judges
+      ? budgeted(judgeProvider || prov(), { who: (req) => `judge:${req?.model || '?'}`, why: 'audition-judge' })
+      : null;
+
     const res = await runAudition({
       candidates, role_prompt, probe,
-      provider: prov(),
+      provider: budgeted(prov(), { who: (req) => `audition:${req?.model || '?'}`, why: 'audition' }),
       // Local models are priced at zero, not unpriced: the row then flows
       // through the same ledger and cost arithmetic as a paid one.
       priceFor: (m) => (isLocalModel(m)
         ? { prompt: 0, completion: 0 }
         : (priceFor ? priceFor(m) : priceOf(loaded?.models, m))),
+      judges,
+      judgeModels,
+      judgeCall: judgePanelProvider
+        ? ({ model, messages }) => judgePanelProvider.call({ name: 'judge', model, messages, params: {}, price: null })
+        : null,
       retryDelayMs
     });
 
@@ -481,6 +689,11 @@ export function createRoom({
         role: r.error ? 'error' : 'assistant', text: r.reply
       });
     }
+    // The panel is part of the audition's price, and hiding it in the probe
+    // total would make the judges look free. They are not.
+    const judgeCost = res.rows.reduce(
+      (n, r) => n + (r.judge_scores || []).reduce((m, s) => m + (Number(s.cost) || 0), 0), 0);
+    if (res.judges?.length) store.addSpend('audition:judges', judgeCost);
 
     // Discovery is evidence too: which hosts answered, and what to run if one
     // did not, belongs in the transcript rather than in a swallowed exception.
@@ -498,7 +711,10 @@ export function createRoom({
 
     // Hiring view: offers first, the audition evidence underneath. The rows are
     // kept verbatim so the chair can still show its working when asked.
-    const offered = makeOffers({ auditionRows: res.rows, role, volume, local_warning: localWarning });
+    const offered = makeOffers({
+      auditionRows: res.rows, role, volume, local_warning: localWarning,
+      autonomy: normalizeAutonomy(autonomy) || DEFAULT_AUTONOMY
+    });
     store.appendEvent({
       host: askHost, author: 'chair', role: 'user',
       text: `offers for role "${role}": ${offered.offers.map((o) => o.model).join(', ') || 'none'}`
@@ -522,7 +738,7 @@ export function createRoom({
   // multiple realistic cases, repeated trials, explicit fatal criteria, and a
   // reproducible pack version. It still hires nobody.
   async function evaluateRole({
-    role_pack, candidates, trials, max_parallel = 4, offers = true,
+    role_pack, candidates, trials, max_parallel = 4, offers = true, autonomy,
     include_local = false, local_only = false, host: askHost = host
   } = {}) {
     try {
@@ -570,58 +786,25 @@ export function createRoom({
         ...c,
         price: c.price || (isLocalModel(c.model) ? { prompt: 0, completion: 0 } : priceOf(loaded?.models, c.model))
       }));
-      // Role packs can fan out dozens of trials. Reserve estimated capacity
-      // before each call, then settle actual cost before waking queued trials.
-      // Unknown-price calls serialize and require at least one cent of room;
-      // this bounds a bad/missing price to one call instead of letting an
-      // entire parallel field run past the cap.
-      let reserved = 0;
-      const waiters = [];
-      const wakeBudgetWaiters = () => {
-        while (waiters.length) waiters.shift()();
-      };
-      const estimatedCallCost = (request) => {
-        const p = request.price;
-        const input = Number(p?.prompt);
-        const output = Number(p?.completion);
-        if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return null;
-        if (input === 0 && output === 0) return 0;
-        const chars = (request.messages || []).reduce((n, m) => n + String(m?.content || '').length, 0);
-        const promptTokens = Math.ceil(chars / 2); // deliberately conservative
-        const completionTokens = Math.max(1, Number(request.params?.max_tokens || pack.default_volume?.tokens_out || 1000));
-        return promptTokens * input + completionTokens * output;
-      };
-      const reserveCall = async (request) => {
-        const estimate = estimatedCallCost(request);
-        while (true) {
-          const spent = Number(store.readSpend().total || 0);
-          const remaining = budget - spent;
-          if (!(remaining > 0)) throw new Error(`spend cap reached before role evaluation call ($${spent.toFixed(4)} of $${budget.toFixed(2)})`);
-          if (estimate === null && remaining < 0.01) {
-            throw new Error(`less than $0.01 remains and this model has no validated price; refusing an unreserved call`);
-          }
-          const wanted = estimate === null ? remaining : estimate;
-          if (wanted <= remaining - reserved) {
-            reserved += wanted;
-            return wanted;
-          }
-          if (reserved <= 0) {
-            throw new Error(`estimated call cost $${wanted.toFixed(4)} exceeds the remaining $${remaining.toFixed(4)} budget`);
-          }
-          await new Promise((resolve) => waiters.push(resolve));
-        }
-      };
-      const budgetedCall = async (request) => {
-        const reservation = await reserveCall(request);
-        try {
-          const result = await callWithRetry({ ...request, provider: prov() });
-          store.addSpend(`evaluation:${pack.id}`, result?.cost || 0);
-          return result;
-        } finally {
-          reserved = Math.max(0, reserved - reservation);
-          wakeBudgetWaiters();
-        }
-      };
+      // Role packs can fan out dozens of trials. The reservation logic that used
+      // to live here now lives in the shared CallBudget, so a role evaluation,
+      // an audition and an ask all draw on one ceiling and land in one
+      // attribution log. The behaviour it had is preserved exactly: estimated
+      // capacity is reserved before each call, unknown-price calls serialise
+      // and require at least a cent of room, and queued trials wake as
+      // reservations settle.
+      const estimateFor = (request) => estimateCallCost({
+        messages: request.messages,
+        params: request.params,
+        price: request.price,
+        defaultMaxTokens: pack.default_volume?.tokens_out || 1000
+      });
+      const evalProvider = budgeted(prov(), {
+        who: `evaluation:${pack.id}`, why: `role-pack:${pack.id}`,
+        estimate: estimateFor, wait: true,
+        onSpend: (cost) => store.addSpend(`evaluation:${pack.id}`, cost)
+      });
+      const budgetedCall = (request) => callWithRetry({ ...request, provider: evalProvider });
       const result = await evaluateRolePack({
         pack,
         candidates: priced,
@@ -681,7 +864,8 @@ export function createRoom({
         role: pack.name,
         volume: pack.default_volume,
         handle: pack.id,
-        local_warning: localWarning
+        local_warning: localWarning,
+        autonomy: normalizeAutonomy(autonomy) || DEFAULT_AUTONOMY
       });
       return {
         ...result,
@@ -778,14 +962,74 @@ export function createRoom({
       const s = spend.byRecruit[r.name] || { calls: 0, spend: 0 };
       const scope = r.__scope === 'project' ? ' · project' : '';
       const fb = r.fallback_model ? ` · fallback:${r.fallback_model}` : '';
-      return `@${r.name} · ${r.model}${fb} · tags:[${(r.tags || []).join(', ')}] · ` +
+      return `@${r.name} · ${r.model}${fb} · ${autonomyOf(r)} · tags:[${(r.tags || []).join(', ')}] · ` +
              `calls:${s.calls} · spend:$${(s.spend || 0).toFixed(4)}${scope}`;
     });
     rows.push(
       `— session total: $${(spend.total || 0).toFixed(4)} of $${budget.toFixed(2)} cap · ` +
+      `${callBudget.calls()} of ${callBudget.maxCalls} calls · ` +
       `provider: ${prov().name} · state: ${store.stateDir}${store.hasOverlay() ? ` (+overlay ${store.overlay})` : ''}`
     );
     return { ok: true, recruits: rs, spend, text: rows.join('\n') };
+  }
+
+  // --- spend -----------------------------------------------------------------
+  // The roster answers "how much is left". This answers "where did it go" —
+  // per recruit, per reason, from the attribution log the budget writes on
+  // every settled call. A cost you cannot attribute is a cost you cannot cut.
+  function spendReport({ limit = 0 } = {}) {
+    const spend = store.readSpend();
+    const log = store.readSpendLog(limit);
+    const snap = callBudget.snapshot();
+
+    const byWho = new Map();
+    for (const e of log) {
+      const who = String(e.who || 'unknown');
+      const row = byWho.get(who) || { who, calls: 0, cost: 0, why: new Map(), errors: 0 };
+      row.calls += 1;
+      row.cost += Number(e.cost) || 0;
+      if (e.error) row.errors += 1;
+      row.why.set(e.why, (row.why.get(e.why) || 0) + 1);
+      byWho.set(who, row);
+    }
+    // A recruit that spent before this process started has ledger totals but no
+    // log lines; show them rather than pretending the money never moved.
+    for (const [who, r] of Object.entries(spend.byRecruit || {})) {
+      if (byWho.has(who)) continue;
+      byWho.set(who, { who, calls: r.calls || 0, cost: r.spend || 0, why: new Map([['(before this session)', r.calls || 0]]), errors: 0 });
+    }
+
+    const rows = [...byWho.values()].sort((a, b) => (b.cost - a.cost) || (b.calls - a.calls));
+    const attribution = rows.map((r) => ({
+      who: r.who, calls: r.calls, cost: Number(r.cost.toFixed(6)), errors: r.errors,
+      why: Object.fromEntries(r.why)
+    }));
+
+    const lines = rows.length
+      ? rows.map((r) =>
+          `${r.who} · ${r.calls} call${r.calls === 1 ? '' : 's'} · $${r.cost.toFixed(4)} · ` +
+          `${[...r.why.entries()].map(([w, n]) => `${w} ${n}`).join(', ')}` +
+          (r.errors ? ` · ${r.errors} errored` : ''))
+      : ['(nothing spent yet)'];
+
+    return {
+      ok: true,
+      totals: {
+        spent: Number(spend.total || 0), cap: snap.cap, remaining_usd: snap.remaining_usd,
+        calls: snap.calls, max_calls: snap.max_calls, remaining_calls: snap.remaining_calls
+      },
+      attribution,
+      ledger: store.spendLogPath(),
+      text: [
+        `spend — $${Number(spend.total || 0).toFixed(4)} of $${snap.cap.toFixed(2)} cap ` +
+        `($${snap.remaining_usd.toFixed(4)} left) · ${snap.calls} of ${snap.max_calls} calls this session ` +
+        `(${snap.remaining_calls} left)`,
+        '',
+        ...lines,
+        '',
+        `— attribution log: ${store.spendLogPath()}`
+      ].join('\n')
+    };
   }
 
   // --- persona lifecycle -----------------------------------------------------
@@ -807,7 +1051,7 @@ export function createRoom({
   const revList = (chain, cur) =>
     [...chain].reverse().map((r) => (r === cur ? `rev ${r} (current)` : `rev ${r}`)).join(' · ');
 
-  function renderPersona({ name, persona, shown, current, chain, briefing, briefRev }) {
+  function renderPersona({ name, persona, shown, current, chain, briefing, briefRev, staleness }) {
     const p = persona;
     const head = shown === current
       ? `@${name} · rev ${shown} (current)`
@@ -817,12 +1061,17 @@ export function createRoom({
       `${head}${when ? ` · updated ${when}` : ''}`,
       `model: ${p.model}${p.fallback_model ? ` · fallback: ${p.fallback_model}` : ''}`,
       `tags: [${(p.tags || []).join(', ')}] · params: ${JSON.stringify(p.params || {})}` +
-        (p.watch ? ' · watch: on' : '')
+        (p.watch ? ' · watch: on' : ''),
+      `autonomy: ${describeAutonomy(autonomyOf(p))}`
     ];
+    const rated = ratingLine(p.authoring_rating);
+    if (rated) lines.push(rated);
     if (p.rolled_back_from) lines.push(`this revision was rolled back from rev ${p.rolled_back_from}`);
     lines.push(`revisions: ${revList(chain, current)}`);
     lines.push(briefing
-      ? `briefing: rev ${briefRev}${briefRev > 1 ? ` (${briefRev - 1} superseded)` : ' (original)'}`
+      ? `briefing: rev ${briefRev}${briefRev > 1 ? ` (${briefRev - 1} superseded)` : ' (original)'}` +
+        (staleness ? ` · ${staleness.events_since} events since it was last compacted` +
+          (staleness.stale ? ` — stale, run brief_compact({name:"${name}"})` : '') : '')
       : 'briefing: none — they started cold; brief_update({name, briefing}) fixes that');
     // Never truncated: the whole point of showing a prompt is reading it.
     lines.push('', `— system prompt (rev ${shown}) —`, p.system_prompt ?? '');
@@ -856,14 +1105,19 @@ export function createRoom({
     const briefing = store.readBriefing(n);
     const briefRev = store.briefingRevision(n);
 
+    const staleness = briefing ? briefStaleness(n) : null;
+
     return {
       ok: true, name: n, revision: shown, current: cur, revisions: chain, persona,
-      briefing, briefing_revision: briefing ? briefRev : 0,
-      text: renderPersona({ name: n, persona, shown, current: cur, chain, briefing, briefRev })
+      autonomy: autonomyOf(persona), authoring_rating: persona.authoring_rating || null,
+      briefing, briefing_revision: briefing ? briefRev : 0, brief_staleness: staleness,
+      text: renderPersona({ name: n, persona, shown, current: cur, chain, briefing, briefRev, staleness })
     };
   }
 
-  async function updatePersona({ name, system_prompt, tags, params, model, fallback_model, watch } = {}) {
+  async function updatePersona({
+    name, system_prompt, tags, params, model, fallback_model, watch, autonomy, authoring_rating
+  } = {}) {
     const n = strip(name || '');
     const current = store.readPersona(n);
     // No implicit create: a typo'd name must not silently spawn a new recruit
@@ -877,9 +1131,21 @@ export function createRoom({
     if (typeof model === 'string' && model.trim()) changes.model = model;
     if (typeof fallback_model === 'string') changes.fallback_model = fallback_model; // '' clears it
     if (typeof watch === 'boolean') changes.watch = watch;
+    if (autonomy !== undefined && autonomy !== null && autonomy !== '') {
+      const level = normalizeAutonomy(autonomy);
+      if (level === undefined) return fail(`invalid autonomy "${autonomy}" — one of ${AUTONOMY_MENU}`);
+      changes.autonomy = level;
+    }
+    if (authoring_rating !== undefined && authoring_rating !== null) {
+      const rating = normalizeAuthoringRating(authoring_rating);
+      if (rating === undefined) {
+        return fail('authoring_rating must be {role_fit, specificity, refusal_clarity, format_clarity} scored 1-10');
+      }
+      changes.authoring_rating = rating;
+    }
     const fields = Object.keys(changes);
     if (!fields.length) {
-      return fail('update_persona needs at least one of: system_prompt, tags, params, model, fallback_model, watch');
+      return fail('update_persona needs at least one of: system_prompt, tags, params, model, fallback_model, watch, autonomy, authoring_rating');
     }
 
     if (changes.model || changes.fallback_model) {
@@ -964,6 +1230,9 @@ export function createRoom({
     const from = store.snapshotBriefing(n);          // null when there was none
     store.writeBriefing(n, briefing);
     const rev = store.briefingRevision(n);
+    // A brief just written is current by definition, so the staleness clock
+    // restarts here whether or not brief_compact was what prompted the rewrite.
+    try { store.writeCompaction(n, { events_at: store.eventCount(), at: new Date().toISOString() }); } catch {}
 
     store.appendEvent({
       host, author: 'chair', role: 'user',
@@ -977,6 +1246,100 @@ export function createRoom({
           `${store.rootFor(n)}/recruits/${n}/briefings/${from}.md). It rides on every call from now on. ` +
           `Persona and memory are untouched.`
         : `Briefed @${n} — brief rev ${rev}, their first. It rides on every call from now on.`
+    };
+  }
+
+  // --- rolling compacted brief -----------------------------------------------
+  // A brief is written once, at hire time, and then the room moves on without
+  // it. Two hundred events later it is describing a project that no longer
+  // exists, and it is still riding on every call — the recruit is now being
+  // actively misinformed, at a cost, on every question.
+  //
+  // Recompacting is a rewrite, and a rewrite needs judgement about what is
+  // superseded, which is exactly what a chair has and a tool does not. So this
+  // tool makes no provider call of its own. It gathers the material — the
+  // current brief, and the channel since the last compaction — and hands it
+  // back with the instruction. The chair writes the new brief and calls
+  // brief_update. The tool is the filing clerk, not the author.
+
+  const compactionOf = (name) => store.readCompaction(name) || { events_at: 0, at: null };
+
+  function briefStaleness(name) {
+    const mark = compactionOf(name);
+    const total = store.eventCount();
+    const since = Math.max(0, total - Number(mark.events_at || 0));
+    return {
+      events_since: since,
+      events_total: total,
+      last_compacted_at: mark.at || null,
+      threshold: BRIEF_STALE_EVENTS,
+      stale: since > BRIEF_STALE_EVENTS
+    };
+  }
+
+  // What of the channel is this recruit's business: things they said, things
+  // said to them, and the chair's decisions, which are everybody's business.
+  const relevantTo = (name) => (e) => {
+    const author = String(e.author || '');
+    if (author === name || author === `audition:${name}`) return true;
+    if (author === 'chair' || e.role === 'user') return true;
+    return new RegExp(`@${name}\\b`).test(String(e.text || ''));
+  };
+
+  function briefCompact({ name, max_words = BRIEF_COMPACT_WORDS, mark = true } = {}) {
+    const n = strip(name || '');
+    if (!store.readPersona(n)) return fail(`no recruit named "${n}" — recruit() first`);
+    const current = store.readBriefing(n);
+    if (!current) {
+      return fail(
+        `@${n} has no onboarding brief to compact — write their first one with brief_update({name:"${n}", briefing})`
+      );
+    }
+
+    const state = briefStaleness(n);
+    const since = store.eventsFrom(state.events_total - state.events_since).filter(relevantTo(n));
+    const rendered = since.length
+      ? since.map((e) => `[${e.ts || '?'}] ${e.author || '?'}${e.role === 'error' ? ' (error)' : ''}: ${String(e.text || '').slice(0, 400)}`).join('\n')
+      : '(nothing in the channel concerned them since the last compaction)';
+
+    const instruction = [
+      `Rewrite @${n}'s onboarding brief. You are the author; this tool called no model.`,
+      '',
+      `Rules:`,
+      `1. ${max_words} words maximum. Shorter is better; a brief nobody can hold in their head is not a brief.`,
+      `2. DROP anything the events below supersede — a decision that was reversed, a state that has moved on,`,
+      `   a codename that was renamed. Superseded facts are worse than missing ones: they are believed.`,
+      `3. KEEP the five sections: project and goal, current state, decisions taken (and why, in a clause),`,
+      `   glossary, and what this seat is for.`,
+      `4. Do not invent. If the events leave something unclear, say it is unclear.`,
+      `5. Write the replacement in full — brief_update replaces wholesale, it does not patch.`,
+      '',
+      `When the draft is ready: brief_update({name: "${n}", briefing: <the full text>}).`
+    ].join('\n');
+
+    if (mark) {
+      store.writeCompaction(n, { events_at: state.events_total, at: new Date().toISOString() });
+    }
+
+    return {
+      ok: true,
+      name: n,
+      max_words,
+      briefing: current,
+      events_since: state.events_since,
+      events_considered: since.length,
+      stale: state.stale,
+      instruction,
+      material: { briefing: current, events: since },
+      text: [
+        instruction,
+        '',
+        `=== CURRENT BRIEF (rev ${store.briefingRevision(n)}, ${current.trim().split(/\s+/).length} words) ===`,
+        current.trim(),
+        '',
+        `=== CHANNEL SINCE LAST COMPACTION (${since.length} of ${state.events_since} events concern @${n}) ===`,
+        rendered
+      ].join('\n')
     };
   }
 
@@ -1079,10 +1442,13 @@ export function createRoom({
   return {
     recruit, ask, discuss, audition, evaluateRole, localModels, roster, dismiss, events,
     showPersona, updatePersona, rollbackPersona,
-    briefUpdate, showBriefing,
+    briefUpdate, showBriefing, briefCompact, briefStaleness,
     pin, unpin, pins: pinsList,
     assignTask, taskStatus, decideTask, cancelTask, execution,
+    spend: spendReport,
     budget,
+    callBudget,
+    maxCalls: callBudget.maxCalls,
     overBudget: () => !!overBudget(),
     host, stateDir: store.stateDir, projectDir,
     digestSource: digest,
