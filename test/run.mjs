@@ -11,7 +11,7 @@ const FILES = [
   'hooks.mjs', 'hermes.mjs', 'slack.mjs',
   'claude-setup.mjs',
   'execution.mjs', 'role-packs.mjs', 'room-extensions.mjs', 'local-models.mjs',
-  'budget.mjs', 'recruiting.mjs'
+  'budget.mjs', 'recruiting.mjs', 'session-bridge.mjs', 'session-mcp.mjs', 'session-lifecycle.mjs'
 ];
 
 let checks = 0;

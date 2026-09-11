@@ -2,6 +2,13 @@
 // MCP adapter over room-core. Thin on purpose: every behaviour lives in
 // ../core/room.mjs so Codex, hermes and this server share one implementation.
 // This path is registered in .mcp.json / ~/.codex/config.toml — keep it stable.
+// Preserve no-argument MCP startup and the legacy CLI alias.
+if (['start', 'join', 'rooms'].includes(process.argv[2])) {
+  const { runRoomCommand } = await import('../adapters/session/commands.mjs');
+  try { console.log(JSON.stringify(await runRoomCommand(process.argv.slice(2)), null, 2)); }
+  catch (e) { console.error(e.message); process.exit(1); }
+  process.exit(0);
+}
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';

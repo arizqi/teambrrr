@@ -100,6 +100,12 @@ persona lifecycle, brief compaction — in [`docs/HIRING.md`](docs/HIRING.md).
 
 ## Hosts
 
+For an experimental bridge between **existing Codex and Claude Code sessions**,
+see [the local session adapter](adapters/session/README.md). Use `teambrrr start NAME`, then ask each agent to join that room. Named rooms
+start their daemon automatically and expose MCP start/join/send/read/wait tools
+inside existing chats. They do not wake idle agents automatically and are
+separate from provider-backed recruits.
+
 | Host | Wiring | `@mention` routing | Status |
 |------|--------|--------------------|--------|
 | Claude Code | `adapters/claude/setup.mjs` → `.mcp.json` + 3 hooks (skill copied by hand) | a hook injects the routing | live |
@@ -184,7 +190,7 @@ work in, alongside an assistant that stays in the chair.
 ## Tests, contributing, license
 
 ```sh
-npm test          # 1393 checks, mock providers, no network
+npm test          # 1445 checks, mock providers; session bridge uses loopback only
 ```
 
 Every test injects its own provider and `stateDir`, so no test calls OpenRouter
