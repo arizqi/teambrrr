@@ -190,7 +190,7 @@ work in, alongside an assistant that stays in the chair.
 ## Tests, contributing, license
 
 ```sh
-npm test          # 1445 checks, mock providers; session bridge uses loopback only
+npm test          # Mock providers; session bridge uses loopback only
 ```
 
 Every test injects its own provider and `stateDir`, so no test calls OpenRouter
@@ -205,3 +205,15 @@ and npm pack contents.
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) ·
   [Conduct](CODE_OF_CONDUCT.md) · [Changelog](CHANGELOG.md) ·
   licensed under [Apache-2.0](LICENSE).
+
+### Start Claude automatically from Codex
+
+With the `teambrrr-chat` MCP server installed, say **“Start TeamBrrr with Claude.”**
+Its `team_start` tool creates the room, launches Claude Code using subscription
+login and bypass permissions, verifies a real reply, and opens the embedded chat.
+Type `@claude` there; replies arrive automatically. Each Codex session gets its
+own default room. Repeating the request reuses the collaborator.
+
+The CLI equivalent is `teambrrr start my-room --with-claude --context-file /path/to/handoff.txt` from Codex's terminal.
+See [managed Claude setup and lifecycle](adapters/session/README.md#one-step-managed-claude)
+for login, permissions, stopping, and recovery details.

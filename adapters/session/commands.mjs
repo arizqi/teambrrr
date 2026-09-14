@@ -1,9 +1,11 @@
+import fs from 'node:fs';
+import { startTeam } from '../../core/session-launcher.mjs';
 import { parseArgs } from 'node:util';
 import { defaultRoomsRoot, ensureRoom, joinRoom, listRooms } from '../../core/session-manager.mjs';
 
 export async function runRoomCommand(argv) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
-    host: { type: 'string' }, session: { type: 'string' }, role: { type: 'string' }, root: { type: 'string' }
+    host: { type: 'string' }, session: { type: 'string' }, role: { type: 'string' }, root: { type: 'string' }, 'with-claude': { type: 'boolean' }, cwd: { type: 'string' }, 'context-file': { type: 'string' }
   } });
   const [command, name] = positionals, root = values.root || defaultRoomsRoot();
   if (command === 'rooms') return { rooms: listRooms(root) };
@@ -11,6 +13,7 @@ export async function runRoomCommand(argv) {
   const host = values.host || (process.env.CODEX_THREAD_ID ? 'codex' : undefined);
   const sessionId = values.session || (host === 'codex' ? process.env.CODEX_THREAD_ID : process.env.CLAUDE_CODE_SESSION_ID);
   if (host === 'codex' && process.env.CODEX_THREAD_ID && sessionId !== process.env.CODEX_THREAD_ID) throw new Error('Session ID differs from current Codex session');
+  if (command === 'start' && values['with-claude']) return startTeam({root,name,sessionId,cwd:values.cwd||process.cwd(),sessionContext:values['context-file']?fs.readFileSync(values['context-file'],'utf8'):undefined});
   if (command === 'start' && !host && !sessionId) {
     const { state, started } = await ensureRoom({ root, name, create: true });
     return { name, room_id: state.id, started, next: `In each agent conversation, ask it to join TeamBrrr room ${name}.` };
